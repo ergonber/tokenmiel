@@ -1,0 +1,20 @@
+{
+  "name": "@miel/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Smart contracts Solidity for tokenization platform (Plume + Polygon)",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test -vvv",
+    "test:fuzz": "forge test --fuzz-runs 10000 -vv",
+    "test:invariant": "forge test --match-path '*invariant*' --invariant-runs 50000 --invariant-depth 100",
+    "test:coverage": "forge coverage --report summary",
+    "test:gas": "forge snapshot --check",
+    "lint": "forge fmt --check",
+    "lint:fix": "forge fmt",
+    "slither": "slither .",
+    "clean": "forge clean",
+    "type-check": "forge build --sizes"
+  },
+  "devDependencies": {}
+}

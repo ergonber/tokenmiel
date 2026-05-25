@@ -1,0 +1,24 @@
+{
+  "name": "tokenization-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RWA tokenization platform — multi-chain (Plume primary, Polygon secondary) with on-chain quality attestation",
+  "scripts": {
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "type-check": "turbo type-check",
+    "dev": "turbo dev",
+    "clean": "turbo clean && rm -rf node_modules .turbo"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "typescript": "^5.5.0",
+    "prettier": "^3.3.0"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

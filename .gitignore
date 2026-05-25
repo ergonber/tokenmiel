@@ -1,0 +1,71 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+.turbo/
+
+# Foundry
+packages/contracts/cache/
+packages/contracts/out/
+packages/contracts/broadcast/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Environment variables (NEVER COMMIT THESE)
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.recommended.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output/
+lcov.info
+
+# Misc
+*.tgz
+.cache/
+
+# Plan files
+.claude/plans/
+
+# SDD
+.atl/.skill-registry.cache.json
+
+# Secrets and keys (CRITICAL: never commit)
+*.pem
+*.key
+secrets/
+.secrets/
+keystore/
+
+# Drizzle
+drizzle/
+
+# Bun
+.bun/
+bun.lockb
