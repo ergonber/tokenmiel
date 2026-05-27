@@ -17,12 +17,11 @@ library QualityRules {
     /// @param c4Passed Resultado del test C4 sugar (true = sin adulteración con azúcares C4).
     /// @param residuesPassed Resultado del test de residuos (true = dentro de límites EU MRL).
     /// @return monofloralCertified True si cumple TODOS los criterios.
-    function isMonofloralCertified(
-        uint8 pollenPercentage,
-        bool nmrPassed,
-        bool c4Passed,
-        bool residuesPassed
-    ) internal pure returns (bool monofloralCertified) {
+    function isMonofloralCertified(uint8 pollenPercentage, bool nmrPassed, bool c4Passed, bool residuesPassed)
+        internal
+        pure
+        returns (bool monofloralCertified)
+    {
         return pollenPercentage >= ComplianceConstants.MIN_POLLEN_PERCENTAGE_MONOFLORAL && nmrPassed && c4Passed
             && residuesPassed;
     }

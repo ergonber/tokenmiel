@@ -31,12 +31,12 @@ library ComplianceConstants {
 
     /// @notice Porcentaje mínimo de polen dominante para clasificar como "monofloral" (estándar UE).
     /// @dev Conforme a Directiva 2014/63/UE.
-    /// @custom:phase2 Reservada para fase 2 cuando se reactive LabRegistry/QualityAttestation.
-    ///                Ver `phase2/README.md` y ADR-010.
+    /// @custom:reserved Reservada para fase 2 cuando se reactive LabRegistry/QualityAttestation.
+    ///                  Ver `phase2/README.md` y ADR-010.
     uint8 internal constant MIN_POLLEN_PERCENTAGE_MONOFLORAL = 45;
 
     /// @notice Mínimo de labs independientes requeridos para una QualityAttestation.
-    /// @custom:phase2 Reservada para fase 2 cuando se reactive LabRegistry/QualityAttestation.
+    /// @custom:reserved Reservada para fase 2 cuando se reactive LabRegistry/QualityAttestation.
     uint8 internal constant MIN_LABS_PARA_ATTESTATION = 2;
 
     /// @notice USDC decimales (6, consistente con Circle USDC).

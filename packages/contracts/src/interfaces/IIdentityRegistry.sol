@@ -23,9 +23,7 @@ interface IIdentityRegistry {
     // FIX M-03: incluir actor (msg.sender) indexed para forensics post-incidente.
     //          Permite distinguir qué Compliance Officer (titular vs suplente) hizo qué cambio,
     //          y validar que las acciones provienen del role correcto.
-    event KYCUpdated(
-        address indexed user, address indexed actor, uint8 tier, uint64 expiresAt, bytes2 jurisdiction
-    );
+    event KYCUpdated(address indexed user, address indexed actor, uint8 tier, uint64 expiresAt, bytes2 jurisdiction);
     event Sanctioned(
         address indexed user, address indexed actor, string reason, bytes32 evidenceHash, uint64 timestamp
     );
@@ -39,13 +37,8 @@ interface IIdentityRegistry {
     event EmergencyUnpaused(address indexed actor, uint64 timestamp);
 
     // ---- Mutating functions ----
-    function setKYC(
-        address user,
-        uint8 tier,
-        uint64 expiresAt,
-        bytes2 jurisdiction,
-        bytes32 sumsubApplicantHash
-    ) external;
+    function setKYC(address user, uint8 tier, uint64 expiresAt, bytes2 jurisdiction, bytes32 sumsubApplicantHash)
+        external;
 
     function markSanctioned(address user, string calldata reason, bytes32 evidenceHash) external;
     function unmarkSanctioned(address user, string calldata reason) external;

@@ -192,7 +192,7 @@ contract AssetVaultTest is BaseTest {
         vm.prank(BACKEND_SIGNER);
         assetVault.comprar(LOTE_ID_DEFAULT, cantidad, BUYER_1, monto, keccak256("payment"));
 
-        uint256 reservaEsperada = (monto * RESERVA_BPS_DEFAULT) / 10000;
+        uint256 reservaEsperada = (monto * RESERVA_BPS_DEFAULT) / 10_000;
         uint256 montoNetoEsperado = monto - reservaEsperada;
 
         IAssetVault.LoteMiel memory lote = assetVault.lotes(LOTE_ID_DEFAULT);
@@ -438,7 +438,7 @@ contract AssetVaultTest is BaseTest {
         _confirmarCosechaDefault();
 
         vm.prank(ORACLE_SAFE);
-        assetVault.marcarFallido(LOTE_ID_DEFAULT, "contaminación post-cosecha");
+        assetVault.marcarFallido(LOTE_ID_DEFAULT, "contaminacion post-cosecha");
 
         IAssetVault.LoteMiel memory lote = assetVault.lotes(LOTE_ID_DEFAULT);
         assertEq(uint8(lote.estado), uint8(IAssetVault.LoteEstado.FALLIDO));
