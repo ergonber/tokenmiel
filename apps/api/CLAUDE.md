@@ -48,7 +48,7 @@
 
 **Patrón:** **Modular Monolith** (un proceso, múltiples módulos con boundaries claros).
 
-**Justificación (ver ARQUITECTURA-TECNICA-MVP.md §13.2):** microservicios añaden complejidad operacional (deployment, networking, distributed tracing) que no justifica el equipo MVP. Permite refactorizar a microservicios cuando el volumen lo justifique.
+**Justificación (ver docs/architecture/ARQUITECTURA-TECNICA-MVP.md §13.2):** microservicios añaden complejidad operacional (deployment, networking, distributed tracing) que no justifica el equipo MVP. Permite refactorizar a microservicios cuando el volumen lo justifique.
 
 **Módulos definidos** (NO inventar nuevos sin justificación documentada):
 
@@ -83,7 +83,7 @@ modules/<name>/
 
 1. `/Users/firrton/Desktop/tokenización/CLAUDE.md` (raíz, reglas globales del proyecto)
 2. **Este archivo** (CLAUDE.md de área)
-3. **`ARQUITECTURA-TECNICA-MVP.md`** secciones 13 (capa backend), 22 (módulos), 23 (flujos críticos)
+3. **`docs/architecture/ARQUITECTURA-TECNICA-MVP.md`** secciones 13 (capa backend), 22 (módulos), 23 (flujos críticos)
 4. **`packages/db/src/schema/*`** para schemas de DB
 5. **`packages/shared/src/*`** para tipos compartidos
 6. **`packages/abis/src/*`** para ABIs on-chain (lectura)

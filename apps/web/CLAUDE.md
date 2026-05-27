@@ -125,7 +125,7 @@ apps/web/src/app/
 
 1. `/Users/firrton/Desktop/tokenización/CLAUDE.md` (raíz)
 2. **Este archivo**
-3. **`ARQUITECTURA-TECNICA-MVP.md`** secciones 14 (frontend), 22 (módulos), 23 (flujos críticos)
+3. **`docs/architecture/ARQUITECTURA-TECNICA-MVP.md`** secciones 14 (frontend), 22 (módulos), 23 (flujos críticos)
 4. **`packages/abis/src/*`** para ABIs y types contratos
 5. **`packages/shared/src/*`** para tipos compartidos
 6. **`packages/ui/src/*`** para componentes existentes

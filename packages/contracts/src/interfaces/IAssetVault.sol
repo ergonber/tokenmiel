@@ -128,8 +128,7 @@ interface IAssetVault {
         TipoCertificadoOrigen tipoCertificado
     ) external;
 
-    function confirmarAlmacenamiento(uint256 loteId, bytes32 hashContratoDeposito, address almacenAutorizado)
-        external;
+    function confirmarAlmacenamiento(uint256 loteId, bytes32 hashContratoDeposito, address almacenAutorizado) external;
 
     function marcarFallido(uint256 loteId, string calldata motivo) external;
 

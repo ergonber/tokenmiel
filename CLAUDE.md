@@ -18,8 +18,8 @@
 
 **Cualquier cambio que contradiga estos documentos requiere un ADR nuevo.**
 
-- `ARQUITECTURA-TECNICA-MVP.md` (v2.0) — arquitectura técnica completa
-- `PROPUESTA-TOKENIZACION-MIEL-BOLIVIANA.md` — propuesta conceptual + legal (responsabilidad del compañero legal, fuera del scope técnico de este repo)
+- `docs/architecture/ARQUITECTURA-TECNICA-MVP.md` (v2.0) — arquitectura técnica completa
+- `docs/business/PROPUESTA-TOKENIZACION-MIEL-BOLIVIANA.md` — propuesta conceptual + legal (responsabilidad del compañero legal, fuera del scope técnico de este repo)
 - `docs/architecture/CONTRACT-SPECS.md` — specs detalladas de los 4 smart contracts
 - `docs/architecture/TEST-SPECS.md` — specs de tests Foundry (TDD-first)
 - `docs/architecture/ADR-*.md` — Architecture Decision Records (decisiones formales)
@@ -159,7 +159,7 @@ pnpm type-check                                     # type check de todo
 - ❌ Commitear sin que tests pasen
 - ❌ Commitear archivos `.env*`, claves privadas, secrets, dumps de DB con PII
 - ❌ Modificar archivos críticos sin ADR:
-  - `ARQUITECTURA-TECNICA-MVP.md`
+  - `docs/architecture/ARQUITECTURA-TECNICA-MVP.md`
   - `docs/architecture/CONTRACT-SPECS.md`
   - `docs/architecture/TEST-SPECS.md`
   - `docs/architecture/ADR-*.md` ya aprobados
@@ -208,7 +208,7 @@ Cualquier agente que toque este repo, **antes de su primer cambio**, debe leer:
 
 1. **Este archivo** (`CLAUDE.md` raíz)
 2. **`/Users/firrton/.claude/CLAUDE.md`** (reglas globales del usuario, aplican siempre)
-3. **`ARQUITECTURA-TECNICA-MVP.md`** (v2.0)
+3. **`docs/architecture/ARQUITECTURA-TECNICA-MVP.md`** (v2.0)
 4. **CLAUDE.md de su área** (contracts / api / web)
 5. **`docs/subagents/SUBAGENT-REGISTRY.md`** (registry de subagentes)
 

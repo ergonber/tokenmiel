@@ -68,9 +68,7 @@ abstract contract BaseTest is Test {
         usdc = new MockUSDC();
 
         // 2. Deploy IdentityRegistry
-        identityRegistry = new IdentityRegistry(
-            ADMIN, BACKEND_SIGNER, COMPLIANCE_OFFICER, COMPLIANCE_OFFICER_SUPLENTE
-        );
+        identityRegistry = new IdentityRegistry(ADMIN, BACKEND_SIGNER, COMPLIANCE_OFFICER, COMPLIANCE_OFFICER_SUPLENTE);
 
         // 3. Deploy AssetVault — usando struct InitParams (sin labRegistry, MVP simplificado)
         AssetVault.InitParams memory params = AssetVault.InitParams({
@@ -89,12 +87,7 @@ abstract contract BaseTest is Test {
 
         // 4. Deploy RedemptionManager
         redemptionManager = new RedemptionManager(
-            ADMIN,
-            ORACLE_SAFE,
-            COMPLIANCE_OFFICER,
-            COMPLIANCE_OFFICER_SUPLENTE,
-            assetVault,
-            identityRegistry
+            ADMIN, ORACLE_SAFE, COMPLIANCE_OFFICER, COMPLIANCE_OFFICER_SUPLENTE, assetVault, identityRegistry
         );
 
         // 5. Set RedemptionManager in AssetVault
@@ -110,9 +103,7 @@ abstract contract BaseTest is Test {
 
     function _setupKYC(address user, uint8 tier, bytes2 jurisdiction) internal {
         vm.prank(BACKEND_SIGNER);
-        identityRegistry.setKYC(
-            user, tier, uint64(block.timestamp + 365 days), jurisdiction, keccak256("applicant")
-        );
+        identityRegistry.setKYC(user, tier, uint64(block.timestamp + 365 days), jurisdiction, keccak256("applicant"));
     }
 
     function _createLoteDefault() internal {

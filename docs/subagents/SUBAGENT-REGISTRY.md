@@ -38,7 +38,7 @@
 3. `docs/architecture/CONTRACT-SPECS.md` (source of truth)
 4. `docs/architecture/TEST-SPECS.md` (TDD-first)
 5. `docs/architecture/ADR-001` a `ADR-005`
-6. `ARQUITECTURA-TECNICA-MVP.md` §6, §7, §7B
+6. `docs/architecture/ARQUITECTURA-TECNICA-MVP.md` §6, §7, §7B
 
 **Comandos permitidos:**
 - `forge build`, `forge test`, `forge fmt`, `forge coverage`
@@ -112,7 +112,7 @@
 2. `packages/contracts/CLAUDE.md`
 3. Todos los `packages/contracts/src/*.sol`
 4. Todos los tests existentes
-5. `ARQUITECTURA-TECNICA-MVP.md` §17 (capa de seguridad)
+5. `docs/architecture/ARQUITECTURA-TECNICA-MVP.md` §17 (capa de seguridad)
 6. ADRs: ADR-003, ADR-004, ADR-005
 
 **Comandos permitidos:**
@@ -161,7 +161,7 @@
 **Archivos críticos a leer ANTES:**
 1. `CLAUDE.md` raíz
 2. `apps/api/CLAUDE.md`
-3. `ARQUITECTURA-TECNICA-MVP.md` §13, §22, §23
+3. `docs/architecture/ARQUITECTURA-TECNICA-MVP.md` §13, §22, §23
 4. Schemas existentes en `packages/db/src/schema/`
 5. Tipos en `packages/shared/src/`
 6. ADR-007 (stack backend)
@@ -192,7 +192,7 @@
 **Archivos críticos a leer ANTES:**
 1. `CLAUDE.md` raíz
 2. `apps/web/CLAUDE.md`
-3. `ARQUITECTURA-TECNICA-MVP.md` §14, §22, §23
+3. `docs/architecture/ARQUITECTURA-TECNICA-MVP.md` §14, §22, §23
 4. ABIs en `packages/abis/src/`
 5. Tipos en `packages/shared/src/`
 
@@ -228,7 +228,7 @@
 1. `CLAUDE.md` raíz
 2. Todos los `CLAUDE.md` de área (para contexto)
 3. ADRs existentes en `docs/architecture/`
-4. `ARQUITECTURA-TECNICA-MVP.md`
+4. `docs/architecture/ARQUITECTURA-TECNICA-MVP.md`
 
 **Comandos permitidos:**
 - Solo lectura de código (`bat`, `rg`, etc.)

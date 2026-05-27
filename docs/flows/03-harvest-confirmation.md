@@ -122,7 +122,7 @@ CONFLICT: The contract requires estado >= QUALITY_ATTESTED to call liberarReserv
           This means the reserve CANNOT be released at COSECHADO state.
           The release must wait until after confirmarCalidad() transitions to QUALITY_ATTESTED.
           
-          CONFLICT: see docs/architecture/CONTRACT-SPECS.md §10 CONFLICT 1 and ARQUITECTURA-TECNICA-MVP §23.3.
+          CONFLICT: see docs/architecture/CONTRACT-SPECS.md §10 CONFLICT 1 and docs/architecture/ARQUITECTURA-TECNICA-MVP.md §23.3.
 
 📜 AV       ~~> 🚨 Event    : ReservaTecnicaLiberada(loteId=7, montoUSDC=XXX, productorSRL=0x...)
 ```
@@ -212,7 +212,7 @@ See `04-quality-attestation.md`. The technical reserve can only be released afte
 
 **CONFLICT: Reserve release timing**
 
-`ARQUITECTURA-TECNICA-MVP.md §23.3` step 14-15 describes the reserve release happening right after `confirmarCosecha`. However, `AssetVault.liberarReservaTecnica()` (line 430-434) requires `estado` to be `QUALITY_ATTESTED`, `ALMACENADO`, `REDENCION_PARCIAL`, or `AGOTADO` — NOT `COSECHADO`.
+`docs/architecture/ARQUITECTURA-TECNICA-MVP.md §23.3` step 14-15 describes the reserve release happening right after `confirmarCosecha`. However, `AssetVault.liberarReservaTecnica()` (line 430-434) requires `estado` to be `QUALITY_ATTESTED`, `ALMACENADO`, `REDENCION_PARCIAL`, or `AGOTADO` — NOT `COSECHADO`.
 
 This means the reserve is NOT released at harvest confirmation but at quality attestation. The architecture document and the code disagree.
 

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.24;
 
-import {AccessControlDefaultAdminRules} from
-    "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import {
+    AccessControlDefaultAdminRules
+} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IIdentityRegistry} from "./interfaces/IIdentityRegistry.sol";
 import {ComplianceConstants} from "./libraries/ComplianceConstants.sol";
@@ -71,13 +72,11 @@ contract IdentityRegistry is AccessControlDefaultAdminRules, Pausable, IIdentity
     // ---- Mutating: BACKEND_SIGNER_ROLE ----
 
     /// @inheritdoc IIdentityRegistry
-    function setKYC(
-        address user,
-        uint8 tier,
-        uint64 expiresAt,
-        bytes2 jurisdiction,
-        bytes32 sumsubApplicantHash
-    ) external onlyRole(BACKEND_SIGNER_ROLE) whenNotPaused {
+    function setKYC(address user, uint8 tier, uint64 expiresAt, bytes2 jurisdiction, bytes32 sumsubApplicantHash)
+        external
+        onlyRole(BACKEND_SIGNER_ROLE)
+        whenNotPaused
+    {
         if (user == address(0)) revert ZeroAddressUser();
         // FIX M-04: tier=0 no se setea acá; usar revokeKYC para separar semánticamente
         // "nunca verificado" (default storage) de "fue verificado y revocado".
