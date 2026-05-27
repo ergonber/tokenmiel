@@ -64,6 +64,7 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     error LoteNotFound(uint256 loteId);
     error LoteNotInAlmacenado();
     error CantidadCero();
+    error CantidadExcedeSupply();
     error BalanceInsuficiente();
     error InvalidHash();
     error RedencionNotIniciada();
@@ -130,6 +131,12 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         {
             revert LoteNotInAlmacenado();
         }
+
+        // RM-19: defense-in-depth check — cantidadTokens no puede exceder el totalSupply del lote.
+        //        Bajo Opcion B, esta condicion es redundante con el balance check de abajo
+        //        (porque balanceOf(buyer) <= totalSupply siempre). Se mantiene como segunda barrera
+        //        contra hipoteticos bugs en ERC1155Supply o paths futuros que bypassen el balance check.
+        if (cantidadTokens > assetVault.totalSupply(loteId)) revert CantidadExcedeSupply();
 
         // RM-01 + RM-02: validar balance disponible (balance real - tokens ya lockeados)
         uint256 currentBalance = IERC1155(address(assetVault)).balanceOf(msg.sender, loteId);
@@ -204,8 +211,9 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         // Burn delegado al AssetVault — unica via permitida de burn
         assetVault.burnForRedemption(comprador, loteId, cantidadTokens);
 
-        emit RedencionEnExportacion(redencionId, dueNumero);
-        emit RedencionCompletada(redencionId, hashBLAWB);
+        // RM-18: actor indexed para forensics (que Safe signer ejecuto la exportacion)
+        emit RedencionEnExportacion(redencionId, msg.sender, dueNumero);
+        emit RedencionCompletada(redencionId, msg.sender, hashBLAWB);
     }
 
     /// @inheritdoc IRedemptionManager
@@ -234,20 +242,25 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         r.completedAt = uint64(block.timestamp);
 
         // ---- Interactions (none) ----
-        emit RedencionCancelada(redencionId, reason);
+        // RM-18: actor indexed para forensics (que Safe signer cancelo la redencion)
+        emit RedencionCancelada(redencionId, msg.sender, reason);
     }
 
     /// @notice Pausa de emergencia. Bloquea unicamente `iniciarRedencion`.
     /// @dev Solo COMPLIANCE_OFFICER_ROLE.
     ///      confirmarExportacion y cancelarRedencion NO se bloquean (ver CONTRACT-SPECS §6.13.8).
+    ///      RM-15: emite EmergencyPaused custom event (ADR-013) ADEMAS del Paused default de OZ.
     function pause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
         _pause();
+        emit EmergencyPaused(msg.sender, uint64(block.timestamp));
     }
 
     /// @notice Despausa el contrato.
     /// @dev Solo COMPLIANCE_OFFICER_ROLE.
+    ///      RM-15: emite EmergencyUnpaused custom event (ADR-013) ADEMAS del Unpaused default de OZ.
     function unpause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
         _unpause();
+        emit EmergencyUnpaused(msg.sender, uint64(block.timestamp));
     }
 
     // ---- View ----

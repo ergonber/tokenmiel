@@ -539,6 +539,15 @@ contract AssetVault is
         super._update(from, to, ids, values);
     }
 
+    // ---- ERC1155Supply / IAssetVault: totalSupply override ----
+
+    /// @dev RM-19: resolve diamond inheritance — `totalSupply(uint256)` esta definido en ERC1155Supply
+    ///      Y declarado en IAssetVault. Solidity exige override explicito para satisfacer ambas bases.
+    ///      Delega al `super.totalSupply` heredado de ERC1155Supply.
+    function totalSupply(uint256 id) public view override(ERC1155Supply, IAssetVault) returns (uint256) {
+        return super.totalSupply(id);
+    }
+
     // ---- IERC165 ----
 
     /// @dev FIX M-08: override actualizado para incluir AccessControlDefaultAdminRules en la cadena.

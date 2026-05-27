@@ -147,4 +147,10 @@ interface IAssetVault {
     function lotes(uint256 loteId) external view returns (LoteMiel memory);
     function kgDisponibles(uint256 loteId) external view returns (uint256);
     function reservaTecnicaActual(uint256 loteId) external view returns (uint256);
+
+    /// @notice Total supply of tokens for a given lote (inherited from ERC1155Supply in AssetVault).
+    /// @dev Exposed in this interface for defense-in-depth checks by consumer contracts (e.g., RedemptionManager).
+    /// @param loteId The lote identifier.
+    /// @return The total amount of tokens currently in circulation for `loteId`.
+    function totalSupply(uint256 loteId) external view returns (uint256);
 }
