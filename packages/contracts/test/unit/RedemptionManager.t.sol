@@ -5,6 +5,7 @@ import {BaseTest} from "../BaseTest.t.sol";
 import {RedemptionManager} from "../../src/RedemptionManager.sol";
 import {IRedemptionManager} from "../../src/interfaces/IRedemptionManager.sol";
 import {IAssetVault} from "../../src/interfaces/IAssetVault.sol";
+import {IIdentityRegistry} from "../../src/interfaces/IIdentityRegistry.sol";
 
 contract RedemptionManagerTest is BaseTest {
     // ---- Constructor / FIX M-08 ----
@@ -228,15 +229,19 @@ contract RedemptionManagerTest is BaseTest {
 
     // ---- confirmarExportacion — nuevos tests RM-04, RM-10 ----
 
-    /// @dev RM-10: revertir cuando dueNumero excede MAX_DUE_NUMERO_LENGTH (64 chars).
+    /// @dev RM-10: revertir cuando dueNumero excede MAX_DUE_NUMERO_LENGTH.
+    ///      Cubre el boundary MAX+1 = 65 chars. El boundary inferior (64 = pass) lo cubre
+    ///      `test_confirmarExportacion_PassesWhen_DUENumeroExactlyMaxLength`.
+    ///      (RM-28: antes habia un test duplicado `_ExactlyMaxLengthPlusOne` con construccion
+    ///       via bytes array — funcionalmente identico, removido por redundancia.)
     function test_confirmarExportacion_RevertWhen_DUENumeroExceedsMaxLength() public {
         // Arrange
         _advanceToAlmacenado();
         vm.prank(BUYER_1);
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
 
-        // Construir string de 65 caracteres (> 64)
-        string memory longDUE = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1"; // 65 chars
+        // 65 chars = MAX_DUE_NUMERO_LENGTH (64) + 1
+        string memory longDUE = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1";
 
         // Act + Assert
         vm.prank(ORACLE_SAFE);
@@ -260,25 +265,6 @@ contract RedemptionManagerTest is BaseTest {
 
         IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
         assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.COMPLETADA));
-    }
-
-    /// @dev RM-10: un string de exactamente 65 chars (MAX + 1) debe revertir.
-    function test_confirmarExportacion_RevertWhen_DUENumeroExactlyMaxLengthPlusOne() public {
-        // Arrange
-        _advanceToAlmacenado();
-        vm.prank(BUYER_1);
-        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
-
-        // 65 chars
-        bytes memory longDUEBytes = new bytes(65);
-        for (uint256 i = 0; i < 65; i++) {
-            longDUEBytes[i] = "A";
-        }
-        string memory longDUE = string(longDUEBytes);
-
-        vm.prank(ORACLE_SAFE);
-        vm.expectRevert(RedemptionManager.DUENumeroTooLong.selector);
-        redemptionManager.confirmarExportacion(redencionId, longDUE, keccak256("BL"));
     }
 
     /// @dev RM-04: verificar que la pre-validacion de balance en confirmarExportacion funciona.
@@ -560,5 +546,181 @@ contract RedemptionManagerTest is BaseTest {
         uint256 finalAvailable = redemptionManager.availableBalance(BUYER_1, LOTE_ID_DEFAULT);
         uint256 finalBalance = assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT);
         assertLe(finalAvailable, finalBalance, "INVARIANTE FINAL: available nunca puede exceder el balance real");
+    }
+
+    // ==========================================================================
+    // RM-25: pause() / unpause() access control + scope verification (RM-05)
+    // ==========================================================================
+
+    /// @dev RM-25: pause() puede ser llamado por COMPLIANCE_OFFICER_ROLE.
+    function test_pause_OnlyComplianceOfficer_HappyPath() public {
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+        assertTrue(redemptionManager.paused());
+    }
+
+    /// @dev RM-25: cualquier address sin COMPLIANCE_OFFICER_ROLE revierte al llamar pause().
+    function test_pause_RevertWhen_NonComplianceOfficer() public {
+        vm.prank(BUYER_1);
+        vm.expectRevert();
+        redemptionManager.pause();
+    }
+
+    /// @dev RM-25: unpause() puede ser llamado por COMPLIANCE_OFFICER_ROLE.
+    function test_unpause_OnlyComplianceOfficer_HappyPath() public {
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+        assertTrue(redemptionManager.paused());
+
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.unpause();
+        assertFalse(redemptionManager.paused());
+    }
+
+    /// @dev RM-25: cualquier address sin COMPLIANCE_OFFICER_ROLE revierte al llamar unpause().
+    function test_unpause_RevertWhen_NonComplianceOfficer() public {
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+
+        vm.prank(BUYER_1);
+        vm.expectRevert();
+        redemptionManager.unpause();
+    }
+
+    /// @dev RM-25 + RM-05: iniciarRedencion SI revierte cuando el contrato esta pausado.
+    ///      whenNotPaused aplica solo aca (per CONTRACT-SPECS §6.13.8 + decision arquitectonica).
+    function test_iniciarRedencion_RevertWhen_Paused() public {
+        _advanceToAlmacenado();
+
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+
+        vm.prank(BUYER_1);
+        vm.expectRevert(); // Pausable.EnforcedPause
+        redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 5, keccak256("ship"));
+    }
+
+    /// @dev RM-25 + RM-05: confirmarExportacion NO usa whenNotPaused por diseno
+    ///      (CONTRACT-SPECS §6.13.8). El oracle puede completar redenciones en curso aun durante pausa.
+    function test_confirmarExportacion_DoesNotRevertWhen_Paused() public {
+        _advanceToAlmacenado();
+
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Pausar DESPUES de iniciar
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+
+        // El oracle puede confirmar igual
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001", keccak256("BLAWB"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.COMPLETADA));
+    }
+
+    /// @dev RM-25 + RM-05: cancelarRedencion NO usa whenNotPaused por diseno.
+    function test_cancelarRedencion_DoesNotRevertWhen_Paused() public {
+        _advanceToAlmacenado();
+
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Pausar DESPUES de iniciar
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+
+        // El oracle puede cancelar igual
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.cancelarRedencion(redencionId, keccak256("aduana-rejected"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.CANCELADA));
+    }
+
+    // ==========================================================================
+    // RM-26: Constructor ZeroAddress negative tests
+    // ==========================================================================
+
+    /// @dev RM-26: constructor revierte si oracleSafe == address(0).
+    function test_constructor_RevertWhen_OracleSafeZero() public {
+        vm.expectRevert(RedemptionManager.ZeroAddress.selector);
+        new RedemptionManager(
+            ADMIN, address(0), COMPLIANCE_OFFICER, COMPLIANCE_OFFICER_SUPLENTE, assetVault, identityRegistry
+        );
+    }
+
+    /// @dev RM-26: constructor revierte si complianceOfficer == address(0).
+    function test_constructor_RevertWhen_ComplianceOfficerZero() public {
+        vm.expectRevert(RedemptionManager.ZeroAddress.selector);
+        new RedemptionManager(
+            ADMIN, ORACLE_SAFE, address(0), COMPLIANCE_OFFICER_SUPLENTE, assetVault, identityRegistry
+        );
+    }
+
+    /// @dev RM-26: constructor revierte si complianceOfficerSuplente == address(0).
+    function test_constructor_RevertWhen_ComplianceOfficerSuplenteZero() public {
+        vm.expectRevert(RedemptionManager.ZeroAddress.selector);
+        new RedemptionManager(ADMIN, ORACLE_SAFE, COMPLIANCE_OFFICER, address(0), assetVault, identityRegistry);
+    }
+
+    /// @dev RM-26: constructor revierte si assetVault == address(0).
+    function test_constructor_RevertWhen_AssetVaultZero() public {
+        vm.expectRevert(RedemptionManager.ZeroAddress.selector);
+        new RedemptionManager(
+            ADMIN,
+            ORACLE_SAFE,
+            COMPLIANCE_OFFICER,
+            COMPLIANCE_OFFICER_SUPLENTE,
+            IAssetVault(address(0)),
+            identityRegistry
+        );
+    }
+
+    /// @dev RM-26: constructor revierte si identityRegistry == address(0).
+    function test_constructor_RevertWhen_IdentityRegistryZero() public {
+        vm.expectRevert(RedemptionManager.ZeroAddress.selector);
+        new RedemptionManager(
+            ADMIN,
+            ORACLE_SAFE,
+            COMPLIANCE_OFFICER,
+            COMPLIANCE_OFFICER_SUPLENTE,
+            assetVault,
+            IIdentityRegistry(address(0))
+        );
+    }
+
+    /// @dev RM-26: constructor revierte si admin == address(0).
+    ///      El contrato delega este check a OpenZeppelin v5 AccessControlDefaultAdminRules.
+    ///      Si OZ NO lo previene, este test FAILA y revela un bug latente del NatSpec.
+    function test_constructor_RevertWhen_AdminZero() public {
+        vm.expectRevert(); // OZ v5: error especifico depende de la version exacta
+        new RedemptionManager(
+            address(0), ORACLE_SAFE, COMPLIANCE_OFFICER, COMPLIANCE_OFFICER_SUPLENTE, assetVault, identityRegistry
+        );
+    }
+
+    // ==========================================================================
+    // RM-27: getNextRedencionId view coverage
+    // ==========================================================================
+
+    /// @dev RM-27: getNextRedencionId() retorna 1 inicialmente y se incrementa tras cada iniciarRedencion.
+    function test_getNextRedencionId_StartsAtOne_AndIncrements() public {
+        // Estado inicial: 1
+        assertEq(redemptionManager.getNextRedencionId(), 1);
+
+        // Despues de iniciar la primera redencion: 2 (post-increment)
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 firstId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 5, keccak256("ship-1"));
+        assertEq(firstId, 1);
+        assertEq(redemptionManager.getNextRedencionId(), 2);
+
+        // Despues de iniciar la segunda redencion: 3
+        vm.prank(BUYER_1);
+        uint256 secondId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 3, keccak256("ship-2"));
+        assertEq(secondId, 2);
+        assertEq(redemptionManager.getNextRedencionId(), 3);
     }
 }

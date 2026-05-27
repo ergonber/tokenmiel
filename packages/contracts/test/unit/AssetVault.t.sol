@@ -217,7 +217,7 @@ contract AssetVaultTest is BaseTest {
         _setupKYC(BUYER_SANCTIONED, 1);
 
         vm.prank(COMPLIANCE_OFFICER);
-        identityRegistry.markSanctioned(BUYER_SANCTIONED, "OFAC", bytes32(0));
+        identityRegistry.markSanctioned(BUYER_SANCTIONED, "OFAC", keccak256("OFAC-evidence"));
 
         uint256 cantidad = 10;
         uint256 monto = cantidad * PRECIO_POR_TOKEN_DEFAULT;
@@ -509,7 +509,7 @@ contract AssetVaultTest is BaseTest {
 
         // Sancionar al buyer DESPUÉS de la compra
         vm.prank(COMPLIANCE_OFFICER);
-        identityRegistry.markSanctioned(BUYER_1, "OFAC", bytes32(0));
+        identityRegistry.markSanctioned(BUYER_1, "OFAC", keccak256("OFAC-evidence"));
 
         vm.prank(ORACLE_SAFE);
         assetVault.marcarFallido(LOTE_ID_DEFAULT, "fallo");
