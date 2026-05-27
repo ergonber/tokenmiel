@@ -12,8 +12,8 @@
 
 Estos son los dos documentos rectores. Cualquier decisión técnica debe respetar lo descrito aquí, o producir un ADR justificando la desviación.
 
-- [`ARQUITECTURA-TECNICA-MVP.md`](./ARQUITECTURA-TECNICA-MVP.md) — arquitectura técnica completa v2.0 (decisiones, stack, módulos, roadmap)
-- [`PROPUESTA-TOKENIZACION-MIEL-BOLIVIANA.md`](./PROPUESTA-TOKENIZACION-MIEL-BOLIVIANA.md) — propuesta conceptual y legal (responsabilidad del compañero legal)
+- [`docs/architecture/ARQUITECTURA-TECNICA-MVP.md`](./docs/architecture/ARQUITECTURA-TECNICA-MVP.md) — arquitectura técnica completa v2.0 (decisiones, stack, módulos, roadmap)
+- [`docs/business/PROPUESTA-TOKENIZACION-MIEL-BOLIVIANA.md`](./docs/business/PROPUESTA-TOKENIZACION-MIEL-BOLIVIANA.md) — propuesta conceptual y legal (responsabilidad del compañero legal)
 
 ## Layout del monorepo
 

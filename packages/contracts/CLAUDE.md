@@ -18,7 +18,7 @@
 **Lo que NO podés tocar:**
 - `apps/web/**`, `apps/api/**` — otras áreas
 - `packages/db/**`, `packages/shared/**`, `packages/ui/**`
-- `ARQUITECTURA-TECNICA-MVP.md`, `CONTRACT-SPECS.md`, `TEST-SPECS.md` (sin ADR)
+- `docs/architecture/ARQUITECTURA-TECNICA-MVP.md`, `CONTRACT-SPECS.md`, `TEST-SPECS.md` (sin ADR)
 
 ---
 
@@ -54,7 +54,7 @@
 7. **`docs/architecture/ADR-003-4-contracts-immutable.md`** (arquitectura contratos)
 8. **`docs/architecture/ADR-004-oracle-design.md`** (Safe + Chainlink PoR)
 9. **`docs/architecture/ADR-005-lab-registry-quality-oracle.md`** (oráculo de calidad)
-10. **`ARQUITECTURA-TECNICA-MVP.md`** secciones 6, 7, 7B, 9
+10. **`docs/architecture/ARQUITECTURA-TECNICA-MVP.md`** secciones 6, 7, 7B, 9
 
 ---
 

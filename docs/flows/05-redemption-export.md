@@ -299,7 +299,7 @@ After cancellation, the buyer's tokens remain in their wallet. They can initiate
 
 **CONFLICT: Who calls `iniciarRedencion()`?**
 
-`ARQUITECTURA-TECNICA-MVP.md §23.4` step 5 says: "Backend ejecuta `RedemptionManager.iniciarRedencion()` (signed)". This implies the backend calls on behalf of the user.
+`docs/architecture/ARQUITECTURA-TECNICA-MVP.md §23.4` step 5 says: "Backend ejecuta `RedemptionManager.iniciarRedencion()` (signed)". This implies the backend calls on behalf of the user.
 
 However, `RedemptionManager.sol:83` does `identityRegistry.canRedeem(msg.sender)` — using `msg.sender` as the buyer. If the backend calls this function, `msg.sender = BACKEND_SIGNER_ADDR`, and the KYC check is against the backend address (which has tier 0).
 
