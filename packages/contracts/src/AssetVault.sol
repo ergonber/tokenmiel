@@ -162,10 +162,10 @@ contract AssetVault is
 
     /// @notice Setea el RedemptionManager (one-time, post-deploy por circular dependency).
     /// @dev Necesario porque RedemptionManager depende de AssetVault y viceversa.
-    function setRedemptionManager(address _redemptionManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (_redemptionManager == address(0)) revert ZeroAddress();
+    function setRedemptionManager(address newRedemptionManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newRedemptionManager == address(0)) revert ZeroAddress();
         if (redemptionManager != address(0)) revert RedemptionManagerAlreadySet();
-        redemptionManager = _redemptionManager;
+        redemptionManager = newRedemptionManager;
     }
 
     // ---- Mutating: ADMIN_ROLE ----
@@ -387,26 +387,39 @@ contract AssetVault is
         uint256 totalDisponible = lote.montoNetoPendiente + (lote.reservaTecnicaUSDC - lote.reservaTecnicaLiberada);
 
         for (uint256 i = 0; i < compradores.length; i++) {
-            address buyer = compradores[i];
-            uint256 balance = balanceOf(buyer, loteId);
-            if (balance == 0) continue;
-
-            if (identityRegistry.isSanctioned(buyer)) revert CannotRefundBlockedAddress();
-            if (identityRegistry.isFrozen(buyer)) revert CannotRefundBlockedAddress();
-            // FIX H-01: bloquea reembolso si el KYC del buyer fue revocado post-compra
-            // (ej.: EDD failure detectado entre la compra y el fallo del lote).
-            if (identityRegistry.getTier(buyer) == 0) revert CannotRefundRevokedAddress();
-
-            uint256 reembolsoUSDC = (totalDisponible * balance) / totalSupplyLote;
-
-            _burn(buyer, loteId, balance);
-
-            if (reembolsoUSDC > 0) {
-                usdc.safeTransfer(buyer, reembolsoUSDC);
-            }
-
-            emit ReembolsoEjecutado(loteId, buyer, balance, reembolsoUSDC);
+            _refundBuyer(loteId, compradores[i], totalDisponible, totalSupplyLote);
         }
+    }
+
+    /// @notice Reembolsa la porción proporcional de escrow de un comprador de un lote FALLIDO.
+    /// @dev Extraído de `reembolsarLoteFallido` para mantener su complejidad ciclomática bajo el
+    ///      umbral. Sigue CEI: checks (sancionado/frozen/revocado) → effect (`_burn`) →
+    ///      interaction (`safeTransfer`). El `nonReentrant` del caller cubre esta función privada.
+    ///      Buyers con balance 0 se saltan (return temprano), preservando el `continue` original.
+    /// @custom:security Los external calls a `identityRegistry`/`usdc` ocurren dentro del loop del
+    ///      caller; el DoS por gas está acotado por `MAX_REFUND_BATCH`.
+    function _refundBuyer(uint256 loteId, address buyer, uint256 totalDisponible, uint256 totalSupplyLote) private {
+        uint256 balance = balanceOf(buyer, loteId);
+        if (balance == 0) return;
+
+        // slither-disable-next-line calls-loop
+        if (identityRegistry.isSanctioned(buyer)) revert CannotRefundBlockedAddress();
+        // slither-disable-next-line calls-loop
+        if (identityRegistry.isFrozen(buyer)) revert CannotRefundBlockedAddress();
+        // FIX H-01: bloquea reembolso si el KYC del buyer fue revocado post-compra
+        // (ej.: EDD failure detectado entre la compra y el fallo del lote).
+        // slither-disable-next-line calls-loop
+        if (identityRegistry.getTier(buyer) == 0) revert CannotRefundRevokedAddress();
+
+        uint256 reembolsoUSDC = (totalDisponible * balance) / totalSupplyLote;
+
+        _burn(buyer, loteId, balance);
+
+        if (reembolsoUSDC > 0) {
+            usdc.safeTransfer(buyer, reembolsoUSDC);
+        }
+
+        emit ReembolsoEjecutado(loteId, buyer, balance, reembolsoUSDC);
     }
 
     /// @notice Marca un lote FALLIDO como reembolso completado. Llamar tras procesar todos los batches.
@@ -546,6 +559,7 @@ contract AssetVault is
         if (!isMint && !isBurn) revert TransferP2PNoPermitido();
 
         if (isMint) {
+            // slither-disable-next-line calls-loop
             if (!identityRegistry.canMint(to)) revert NotKYCVerified();
         }
 
