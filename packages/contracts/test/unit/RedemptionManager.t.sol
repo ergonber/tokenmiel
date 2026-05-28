@@ -877,4 +877,87 @@ contract RedemptionManagerTest is BaseTest {
         vm.expectRevert(RedemptionManager.EmptyReason.selector);
         redemptionManager.cancelarRedencion(redencionId, bytes32(0));
     }
+
+    // ==========================================================================
+    // ADR-015 (RM-06 + RM-07): Timeout Policy — 3 paths de cancelacion
+    // ==========================================================================
+
+    /// @dev ADR-015 Path 2: COMPLIANCE_OFFICER (titular) puede cancelar siempre, sin timeout.
+    function test_cancelarRedencion_ByComplianceOfficer_HappyPath() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Compliance officer cancela inmediatamente, sin esperar 60d
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.cancelarRedencion(redencionId, keccak256("regulatory-block"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.CANCELADA));
+        // Lock liberado correctamente
+        assertEq(redemptionManager.tokensLockedFor(BUYER_1, LOTE_ID_DEFAULT), 0);
+    }
+
+    /// @dev ADR-015 Path 2: COMPLIANCE_OFFICER_SUPLENTE tambien puede cancelar (mismo rol).
+    function test_cancelarRedencion_ByComplianceOfficerSuplente_HappyPath() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        vm.prank(COMPLIANCE_OFFICER_SUPLENTE);
+        redemptionManager.cancelarRedencion(redencionId, keccak256("regulatory-block"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.CANCELADA));
+    }
+
+    /// @dev ADR-015 Path 3: comprador puede self-cancel DESPUES de REDENCION_TIMEOUT (60d).
+    ///      Verifica el escape valve si el Oracle Safe desaparece (cierra RM-06 + RM-07).
+    function test_cancelarRedencion_ByBuyer_AfterTimeout_HappyPath() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Avanzar el tiempo PAST el timeout (60d + 1s para asegurar >=)
+        vm.warp(block.timestamp + redemptionManager.REDENCION_TIMEOUT() + 1);
+
+        // Buyer cancela su propia redencion stuck
+        vm.prank(BUYER_1);
+        redemptionManager.cancelarRedencion(redencionId, keccak256("oracle-disappeared"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.CANCELADA));
+        // Lock liberado, buyer recupera availableBalance
+        assertEq(redemptionManager.tokensLockedFor(BUYER_1, LOTE_ID_DEFAULT), 0);
+    }
+
+    /// @dev ADR-015 Path 3 negativo: comprador ANTES del timeout revierte OnlyAuthorizedCanceler.
+    function test_cancelarRedencion_RevertWhen_BuyerCallsBeforeTimeout() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Intentar cancelar solo 30 dias despues (< 60d timeout)
+        vm.warp(block.timestamp + 30 days);
+
+        vm.prank(BUYER_1);
+        vm.expectRevert(RedemptionManager.OnlyAuthorizedCanceler.selector);
+        redemptionManager.cancelarRedencion(redencionId, keccak256("too-early"));
+    }
+
+    /// @dev ADR-015 negativo: una direccion random (no oracle, no compliance, no buyer)
+    ///      NO puede cancelar — ni siquiera despues del timeout.
+    function test_cancelarRedencion_RevertWhen_RandomCallerEvenAfterTimeout() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Avanzar past timeout — el timeout solo aplica al buyer mismo
+        vm.warp(block.timestamp + redemptionManager.REDENCION_TIMEOUT() + 1);
+
+        // Random address (no roles, no buyer) intenta cancelar
+        vm.prank(BUYER_2);
+        vm.expectRevert(RedemptionManager.OnlyAuthorizedCanceler.selector);
+        redemptionManager.cancelarRedencion(redencionId, keccak256("random"));
+    }
 }

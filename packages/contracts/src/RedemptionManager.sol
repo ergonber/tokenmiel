@@ -49,6 +49,11 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     /// @dev Los numeros DUE reales son < 64 chars. Limita storage inflation por parte del Oracle.
     uint256 public constant MAX_DUE_NUMERO_LENGTH = 64;
 
+    /// @notice Tiempo despues del cual el comprador puede self-cancel una redencion stuck (ADR-015).
+    /// @dev 60 dias balancea export-time tipico Bolivia→UE (30-45d + margen) con consumer protection
+    ///      del buyer si el Oracle Safe desaparece. Resuelve RM-06 + RM-07 (HIGH) del audit.
+    uint256 public constant REDENCION_TIMEOUT = 60 days;
+
     // ---- Storage ----
     mapping(uint256 => Redencion) private _redenciones;
     uint256 private _nextRedencionId;
@@ -66,6 +71,7 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     error CantidadCero();
     error CantidadExcedeSupply();
     error BalanceInsuficiente();
+    error OnlyAuthorizedCanceler();
     error InvalidHash();
     error RedencionNotIniciada();
     error RedencionAlreadyFinalized();
@@ -218,20 +224,36 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
 
     /// @inheritdoc IRedemptionManager
     /// @notice Cancela una redencion en curso, liberando el lock contable del comprador.
-    /// @dev Solo ORACLE_ROLE. NO usa `whenNotPaused` por diseno (CONTRACT-SPECS §6.13.8):
-    ///      la cancelacion debe estar disponible incluso durante una pausa de emergencia
-    ///      para resolver redenciones stuck.
+    /// @dev ADR-015 timeout policy — 3 paths validos para cancelar:
+    ///        1. ORACLE_ROLE: siempre (operacion normal)
+    ///        2. COMPLIANCE_OFFICER_ROLE: siempre (motivos regulatorios, CONTRACT-SPECS §6.3)
+    ///        3. msg.sender == r.comprador: despues de REDENCION_TIMEOUT (escape valve, RM-06)
     /// @custom:security
     ///   - NO usa whenNotPaused por diseno — ver CONTRACT-SPECS §6.13.8.
-    ///   - RM-14: nonReentrant por defense-in-depth. Hoy no hay external calls, pero si en
-    ///     futuras iteraciones se agrega AssetVault.returnRedemptionTokens, el modifier ya esta.
-    ///   - El lock se libera antes del emit (CEI, aunque no hay external calls aqui).
-    function cancelarRedencion(uint256 redencionId, bytes32 reason) external onlyRole(ORACLE_ROLE) nonReentrant {
+    ///   - NO usa onlyRole modifier — access control inline para soportar el path del buyer.
+    ///   - RM-14: nonReentrant por defense-in-depth.
+    ///   - ADR-015: el buyer-after-timeout path garantiza que el lock nunca queda eterno
+    ///     si el Oracle Safe desaparece. Cierra los findings RM-06 + RM-07 (HIGH) del audit.
+    function cancelarRedencion(uint256 redencionId, bytes32 reason) external nonReentrant {
         // ---- Checks ----
         Redencion storage r = _redenciones[redencionId];
         if (r.comprador == address(0)) revert RedencionNotIniciada();
         if (r.estado != EstadoRedencion.INICIADA) revert RedencionAlreadyFinalized();
         if (reason == bytes32(0)) revert EmptyReason();
+
+        // ADR-015: tres paths de access control evaluados inline
+        bool isOracle = hasRole(ORACLE_ROLE, msg.sender);
+        bool isCompliance = hasRole(COMPLIANCE_OFFICER_ROLE, msg.sender);
+
+        // Slither flagea `block.timestamp` como peligroso porque mineros/validators pueden
+        // manipularlo +/-15s. Es falso positivo aca: el threshold es 60 DIAS (= 5,184,000s),
+        // la manipulacion posible es 0.000003% del threshold — operacionalmente irrelevante.
+        // No se usa para randomness ni precision timing. Mismo patron que IdentityRegistry
+        // usa para KYC expiration. ADR-015 documenta el tradeoff.
+        // slither-disable-next-line timestamp
+        bool isBuyerAfterTimeout =
+            (msg.sender == r.comprador && block.timestamp >= r.createdAt + REDENCION_TIMEOUT);
+        if (!isOracle && !isCompliance && !isBuyerAfterTimeout) revert OnlyAuthorizedCanceler();
 
         // ---- Effects ----
         // Liberar el lock contable (RM-01: el acumulador decrementa en cancelacion)
@@ -242,7 +264,7 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         r.completedAt = uint64(block.timestamp);
 
         // ---- Interactions (none) ----
-        // RM-18: actor indexed para forensics (que Safe signer cancelo la redencion)
+        // RM-18: actor indexed para forensics (que rol/persona cancelo la redencion)
         emit RedencionCancelada(redencionId, msg.sender, reason);
     }
 

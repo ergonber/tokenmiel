@@ -127,4 +127,10 @@ interface IRedemptionManager {
     ///      las constantes deben ser SCREAMING_SNAKE_CASE per CLAUDE.md §5 + Solidity style guide.
     // slither-disable-next-line naming-convention
     function MAX_DUE_NUMERO_LENGTH() external view returns (uint256);
+
+    /// @notice Tiempo despues del cual el comprador puede self-cancel una redencion stuck.
+    /// @return Duracion en segundos (ADR-015, default 60 dias).
+    /// @dev Falso positivo de naming-convention idem MAX_DUE_NUMERO_LENGTH.
+    // slither-disable-next-line naming-convention
+    function REDENCION_TIMEOUT() external view returns (uint256);
 }
