@@ -560,33 +560,53 @@ contract RedemptionManagerTest is BaseTest {
     // RM-25: pause() / unpause() access control + scope verification (RM-05)
     // ==========================================================================
 
-    /// @dev RM-25: pause() puede ser llamado por COMPLIANCE_OFFICER_ROLE.
-    function test_pause_OnlyComplianceOfficer_HappyPath() public {
+    /// @dev RM-25 + ADR-016: pause() puede ser llamado por COMPLIANCE_OFFICER_ROLE (path 1).
+    function test_pause_ByComplianceOfficer_HappyPath() public {
         vm.prank(COMPLIANCE_OFFICER);
         redemptionManager.pause();
         assertTrue(redemptionManager.paused());
     }
 
-    /// @dev RM-25: cualquier address sin COMPLIANCE_OFFICER_ROLE revierte al llamar pause().
-    function test_pause_RevertWhen_NonComplianceOfficer() public {
+    /// @dev ADR-016: pause() tambien puede ser llamado por DEFAULT_ADMIN_ROLE (path 2 — defensa cruzada).
+    function test_pause_ByDefaultAdmin_HappyPath() public {
+        vm.prank(ADMIN);
+        redemptionManager.pause();
+        assertTrue(redemptionManager.paused());
+    }
+
+    /// @dev ADR-016: cualquier address sin COMPLIANCE_OFFICER ni DEFAULT_ADMIN revierte
+    ///      con el error custom UnauthorizedPauseActor.
+    function test_pause_RevertWhen_UnauthorizedActor() public {
         vm.prank(BUYER_1);
-        vm.expectRevert();
+        vm.expectRevert(RedemptionManager.UnauthorizedPauseActor.selector);
         redemptionManager.pause();
     }
 
-    /// @dev RM-25: unpause() puede ser llamado por COMPLIANCE_OFFICER_ROLE.
-    function test_unpause_OnlyComplianceOfficer_HappyPath() public {
+    /// @dev ADR-016: unpause() puede ser llamado SOLO por DEFAULT_ADMIN_ROLE (Safe 2-de-3).
+    ///      Cambio de seguridad: ya NO COMPLIANCE_OFFICER (era simetrico, ahora asimetrico).
+    function test_unpause_ByDefaultAdmin_HappyPath() public {
         vm.prank(COMPLIANCE_OFFICER);
         redemptionManager.pause();
         assertTrue(redemptionManager.paused());
 
-        vm.prank(COMPLIANCE_OFFICER);
+        vm.prank(ADMIN);
         redemptionManager.unpause();
         assertFalse(redemptionManager.paused());
     }
 
-    /// @dev RM-25: cualquier address sin COMPLIANCE_OFFICER_ROLE revierte al llamar unpause().
-    function test_unpause_RevertWhen_NonComplianceOfficer() public {
+    /// @dev ADR-016 (cambio de seguridad): COMPLIANCE_OFFICER ya NO puede despausar.
+    ///      Si un Compliance Officer comprometido pausa, no puede deshacer su propio ataque.
+    function test_unpause_RevertWhen_ComplianceOfficer() public {
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+
+        vm.prank(COMPLIANCE_OFFICER);
+        vm.expectRevert(); // OZ AccessControl revert — COMPLIANCE_OFFICER no tiene DEFAULT_ADMIN_ROLE
+        redemptionManager.unpause();
+    }
+
+    /// @dev ADR-016: cualquier address sin DEFAULT_ADMIN_ROLE revierte al llamar unpause().
+    function test_unpause_RevertWhen_NonDefaultAdmin() public {
         vm.prank(COMPLIANCE_OFFICER);
         redemptionManager.pause();
 
@@ -605,17 +625,18 @@ contract RedemptionManagerTest is BaseTest {
         redemptionManager.pause();
     }
 
-    /// @dev RM-15: unpause() emite EmergencyUnpaused custom event con actor + timestamp.
+    /// @dev RM-15 + ADR-016: unpause() emite EmergencyUnpaused custom event con actor + timestamp.
+    ///      Actor ahora es ADMIN (DEFAULT_ADMIN_ROLE), no COMPLIANCE_OFFICER.
     function test_unpause_EmitsEmergencyUnpausedEvent() public {
         // Primero pausar
         vm.prank(COMPLIANCE_OFFICER);
         redemptionManager.pause();
 
-        // Verificar evento al despausar
+        // Verificar evento al despausar via ADMIN
         vm.expectEmit(true, false, false, true, address(redemptionManager));
-        emit IRedemptionManager.EmergencyUnpaused(COMPLIANCE_OFFICER, uint64(block.timestamp));
+        emit IRedemptionManager.EmergencyUnpaused(ADMIN, uint64(block.timestamp));
 
-        vm.prank(COMPLIANCE_OFFICER);
+        vm.prank(ADMIN);
         redemptionManager.unpause();
     }
 

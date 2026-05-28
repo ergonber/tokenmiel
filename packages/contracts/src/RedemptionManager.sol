@@ -72,6 +72,9 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     error CantidadExcedeSupply();
     error BalanceInsuficiente();
     error OnlyAuthorizedCanceler();
+
+    /// @dev ADR-016: error usado por pause() cuando el caller no tiene COMPLIANCE_OFFICER ni DEFAULT_ADMIN.
+    error UnauthorizedPauseActor();
     error InvalidHash();
     error RedencionNotIniciada();
     error RedencionAlreadyFinalized();
@@ -269,18 +272,21 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     }
 
     /// @notice Pausa de emergencia. Bloquea unicamente `iniciarRedencion`.
-    /// @dev Solo COMPLIANCE_OFFICER_ROLE.
+    /// @dev ADR-016 (sistémico): defensa cruzada — COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE.
     ///      confirmarExportacion y cancelarRedencion NO se bloquean (ver CONTRACT-SPECS §6.13.8).
-    ///      RM-15: emite EmergencyPaused custom event (ADR-013) ADEMAS del Paused default de OZ.
-    function pause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    ///      RM-15: emite EmergencyPaused custom event ADEMAS del Paused default de OZ.
+    function pause() external whenNotPaused {
+        if (!hasRole(COMPLIANCE_OFFICER_ROLE, msg.sender) && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert UnauthorizedPauseActor();
+        }
         _pause();
         emit EmergencyPaused(msg.sender, uint64(block.timestamp));
     }
 
-    /// @notice Despausa el contrato.
-    /// @dev Solo COMPLIANCE_OFFICER_ROLE.
-    ///      RM-15: emite EmergencyUnpaused custom event (ADR-013) ADEMAS del Unpaused default de OZ.
-    function unpause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    /// @notice Despausa el contrato post-incidente.
+    /// @dev ADR-016 (sistémico): SOLO DEFAULT_ADMIN_ROLE (Safe 2-de-3) — decisión deliberada.
+    ///      RM-15: emite EmergencyUnpaused custom event ADEMAS del Unpaused default de OZ.
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
         emit EmergencyUnpaused(msg.sender, uint64(block.timestamp));
     }

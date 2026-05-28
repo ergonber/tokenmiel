@@ -608,25 +608,67 @@ contract AssetVaultTest is BaseTest {
     }
 
     // ============================================================================
-    // pause / unpause
+    // pause / unpause — ADR-016 (asymmetry: pause=Compliance|Admin, unpause=Admin only)
     // ============================================================================
 
-    function test_pause_OnlyComplianceOfficer() public {
+    /// @dev ADR-016: COMPLIANCE_OFFICER_ROLE puede pausar (path 1).
+    function test_pause_ByComplianceOfficer_HappyPath() public {
+        vm.prank(COMPLIANCE_OFFICER);
+        assetVault.pause();
+        assertTrue(assetVault.paused());
+    }
+
+    /// @dev ADR-016: DEFAULT_ADMIN_ROLE tambien puede pausar (path 2 — defensa cruzada).
+    function test_pause_ByDefaultAdmin_HappyPath() public {
         vm.prank(ADMIN);
-        vm.expectRevert();
+        assetVault.pause();
+        assertTrue(assetVault.paused());
+    }
+
+    /// @dev ADR-016: address sin COMPLIANCE_OFFICER ni DEFAULT_ADMIN revierte con UnauthorizedPauseActor.
+    function test_pause_RevertWhen_UnauthorizedActor() public {
+        vm.prank(BUYER_1);
+        vm.expectRevert(AssetVault.UnauthorizedPauseActor.selector);
         assetVault.pause();
     }
 
+    /// @dev ADR-016: unpause SOLO via DEFAULT_ADMIN_ROLE (Safe 2-de-3) — restaura comprar despues.
     function test_unpause_RestoresComprar() public {
         _createLoteDefault();
 
-        vm.startPrank(COMPLIANCE_OFFICER);
+        // Pausar via COMPLIANCE_OFFICER (rapido, sigue siendo valido)
+        vm.prank(COMPLIANCE_OFFICER);
         assetVault.pause();
-        assetVault.unpause();
-        vm.stopPrank();
+        assertTrue(assetVault.paused());
 
+        // Despausar via ADMIN (Safe 2-de-3) — decision deliberada post-incidente
+        vm.prank(ADMIN);
+        assetVault.unpause();
+        assertFalse(assetVault.paused());
+
+        // Comprar funciona normalmente despues del unpause
         _comprarTokens(BUYER_1, 1, 1);
         assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), 1);
+    }
+
+    /// @dev ADR-016 (cambio de seguridad): COMPLIANCE_OFFICER ya NO puede despausar.
+    function test_unpause_RevertWhen_ComplianceOfficer() public {
+        vm.prank(COMPLIANCE_OFFICER);
+        assetVault.pause();
+
+        vm.prank(COMPLIANCE_OFFICER);
+        vm.expectRevert(); // OZ AccessControl — Compliance Officer no tiene DEFAULT_ADMIN_ROLE
+        assetVault.unpause();
+    }
+
+    /// @dev ADR-016: address random sin DEFAULT_ADMIN_ROLE revierte al unpause.
+    function test_unpause_RevertWhen_NonDefaultAdmin() public {
+        vm.prank(COMPLIANCE_OFFICER);
+        assetVault.pause();
+
+        vm.prank(BUYER_1);
+        vm.expectRevert();
+        assetVault.unpause();
     }
 
     // ============================================================================

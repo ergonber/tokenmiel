@@ -34,6 +34,7 @@ import {DocumentHashes} from "./libraries/DocumentHashes.sol";
 ///   - MVP simplificado: QualityAttestation (LabRegistry) reservado para fase 2.
 ///   - FIX M-08: usa AccessControlDefaultAdminRules con delay de 3 días para transferencias de
 ///     DEFAULT_ADMIN_ROLE (mitiga lockout accidental o malicioso).
+// slither-disable-next-line unimplemented-functions
 contract AssetVault is
     ERC1155,
     ERC1155Supply,
@@ -95,6 +96,9 @@ contract AssetVault is
     /// @dev Defensa contra revocación post-compra (EDD failure, sanción no formal, etc.) que
     ///      `isSanctioned`/`isFrozen` no cubren. La recuperación off-chain queda en compliance.
     error CannotRefundRevokedAddress();
+
+    /// @dev ADR-016: error usado por pause() cuando el caller no tiene COMPLIANCE_OFFICER ni DEFAULT_ADMIN.
+    error UnauthorizedPauseActor();
 
     /// @notice Cantidad máxima de buyers procesables en una sola llamada a `reembolsarLoteFallido`.
     /// @dev Prevenir DoS por out-of-gas con arrays grandes.
@@ -474,13 +478,22 @@ contract AssetVault is
     // ---- Mutating: COMPLIANCE_OFFICER_ROLE ----
 
     /// @inheritdoc IAssetVault
-    function pause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    /// @notice Pausa de emergencia del contrato.
+    /// @dev ADR-016 (sistémico): defensa cruzada — COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE
+    ///      pueden pausar. Si un Compliance Officer se compromete, el Safe puede pausar igual.
+    function pause() external whenNotPaused {
+        if (!hasRole(COMPLIANCE_OFFICER_ROLE, msg.sender) && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert UnauthorizedPauseActor();
+        }
         _pause();
         emit EmergencyPaused(msg.sender, uint64(block.timestamp));
     }
 
     /// @inheritdoc IAssetVault
-    function unpause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    /// @notice Despausa el contrato post-incidente.
+    /// @dev ADR-016 (sistémico): SOLO DEFAULT_ADMIN_ROLE (Safe 2-de-3) — decisión deliberada.
+    ///      Si un Compliance Officer comprometido pausó, el Safe debe coordinar el unpause.
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
         emit EmergencyUnpaused(msg.sender, uint64(block.timestamp));
     }
@@ -544,6 +557,11 @@ contract AssetVault is
     /// @dev RM-19: resolve diamond inheritance — `totalSupply(uint256)` esta definido en ERC1155Supply
     ///      Y declarado en IAssetVault. Solidity exige override explicito para satisfacer ambas bases.
     ///      Delega al `super.totalSupply` heredado de ERC1155Supply.
+    /// @dev Slither flagea `unimplemented-functions` IAssetVault.totalSupply como falso positivo —
+    ///      no resuelve correctamente diamond inheritance via super. El test
+    ///      `test_iniciarRedencion_RevertWhen_CantidadExcedeSupplyTotal` prueba que SI esta implementada
+    ///      (RedemptionManager llama assetVault.totalSupply via IAssetVault y funciona).
+    // slither-disable-next-line unimplemented-functions
     function totalSupply(uint256 id) public view override(ERC1155Supply, IAssetVault) returns (uint256) {
         return super.totalSupply(id);
     }
