@@ -2,7 +2,7 @@
 
 > **Propósito:** documento de continuidad para retomar el trabajo de smart contracts en una nueva sesión de Claude (o por otra persona). Contiene: estado actual, metodología de trabajo, gotchas del entorno, comandos de referencia, y el plan de los próximos pasos con opciones y recomendaciones.
 
-**Última actualización:** 2026-05-27
+**Última actualización:** 2026-05-28
 **Autor de la sesión:** Daniel Hidalgo Carrasco + Claude
 **Scope del documento:** `packages/contracts/` (smart contracts Solidity)
 
@@ -11,9 +11,9 @@
 ## 0. TL;DR — cómo arrancar la próxima sesión
 
 1. Leé este documento entero (especialmente §3 Metodología y §4 Entorno/Gotchas).
-2. Estado: **RedemptionManager.sol está 100% cerrado** (audit + 3 ADRs + 100% coverage + slither clean). **AssetVault e IdentityRegistry tienen gaps**. Integration tests y deploy scripts NO existen.
-3. **Acción inmediata pendiente:** abrir **PR #2** para mergear los 4 commits del feature branch que NO están en main (ver §2).
-4. **Próximo trabajo recomendado:** Gap 1 (Integration tests) → ver §6.
+2. Estado: **los 4 gaps críticos están CERRADOS** (2026-05-28). Los 3 contratos del MVP (RedemptionManager, AssetVault, IdentityRegistry) están al **100% de branches + Slither 0 findings**. Integration tests y deploy scripts ahora EXISTEN. Ver §6.
+3. **Acción inmediata pendiente:** abrir el PR del feature branch hacia `main` (ver §2 — OJO: el estado de `main` local no cuadra con lo documentado; verificar `origin/main` primero).
+4. **Próximo trabajo recomendado:** documentación pendiente (01-deployment, CONTRACT-SPECS), gaps medios (§7) y deploy a testnet.
 5. Prompt sugerido para arrancar la próxima sesión: ver §9.
 
 ---
@@ -24,13 +24,13 @@
 
 | Contrato | Audit | Coverage (líneas / branches / funcs) | Slither | Estado |
 |---|---|---|---|---|
-| **RedemptionManager.sol** | ✅ Ciclo completo (este sprint) | **100% / 100% / 100%** | ✅ 0 findings | ✅ **CERRADO** |
-| **AssetVault.sol** | ✅ 2026-05-19 (previo) | 94.24% / **41.67%** / 90.48% | ⚠️ 6 findings INFO | 🟡 Gaps abiertos |
-| **IdentityRegistry.sol** | ✅ 2026-05-22 (previo) | 100% / **48.00%** / 100% | ❓ No corrido standalone | 🟡 Gaps abiertos |
+| **RedemptionManager.sol** | ✅ Ciclo completo | **100% / 100% / 100%** | ✅ 0 findings | ✅ **CERRADO** |
+| **AssetVault.sol** | ✅ 2026-05-19 | **100% / 100% / 100%** | ✅ 0 findings | ✅ **CERRADO** (Gap 3, 2026-05-28) |
+| **IdentityRegistry.sol** | ✅ 2026-05-22 | **100% / 100% / 100%** | ✅ 0 findings | ✅ **CERRADO** (Gap 4, 2026-05-28) |
 | **LabRegistry.sol** | — | — | — | ⏸️ `phase2/` (reservado, ADR-010, NO MVP) |
 
-### Tests totales del proyecto: **149/149 passing**
-- AssetVault: 45 · IdentityRegistry: 33 · RedemptionManager: 71
+### Tests totales del proyecto: **216/216 passing** (sin invariants)
+- AssetVault: 45 + 44 (branches) · IdentityRegistry: 33 + 13 (branches) · RedemptionManager: 71 · DeployPlume: 5 · Lifecycle E2E: 5
 
 ### Findings del audit de RedemptionManager (23 totales): TODOS cerrados o deferidos
 - 5 CRITICAL ✅ · 6 HIGH ✅ · 5 MEDIUM ✅ · 4 LOW ✅ · 3 INFO (2 ✅ + 1 refutado)
@@ -38,7 +38,12 @@
 
 ---
 
-## 2. Estado Git / PR (LEER — hay commits sin mergear)
+## 2. Estado Git / PR (LEER — verificar `origin/main` antes del PR)
+
+> **Actualización 2026-05-28:** los commits de los 4 gaps ya están en `feature/redemption-manager-option-b`:
+> `9c49a9c` (Gap 4) · `f9b9066` (Gap 3) · `a6ee3cc` (Gap 1) · `08a5301` (Gap 2) · `00b07c0` (design doc).
+> **OJO:** el `main` LOCAL solo tiene `92fd0e0` + `fdc72a2` — NO el merge de PR #1 que la subsección de abajo asume.
+> Verificar `origin/main` (puede estar adelantado) ANTES de abrir el PR. El detalle de abajo quedó desactualizado y se conserva como referencia.
 
 - **Repo:** https://github.com/Firrton/tokenization-platform (privado)
 - **Colaborador:** `ergonber` (write access, invitación enviada)
@@ -206,7 +211,15 @@ PATH="/Users/firrton/.foundry/bin:$PATH" slither . --filter-paths "lib|test|phas
 
 ---
 
-## 6. Los 4 GAPS CRÍTICOS — opciones y recomendaciones
+## 6. Los 4 GAPS CRÍTICOS — ✅ TODOS RESUELTOS (2026-05-28)
+
+> **Cerrados en la sesión del 2026-05-28**, los 4 con la opción **B**:
+> - **Gap 2** (deploy scripts) → `script/DeployPlume.s.sol` (deploy + getConfig 3 perfiles + run + reverts) · commit `08a5301`
+> - **Gap 1** (integration tests) → `test/integration/Lifecycle.t.sol`, 5 E2E (happy + refund + 3 cancelaciones) · `a6ee3cc`
+> - **Gap 3** (AssetVault) → 100% branches (44 tests) + refactor `_refundBuyer` + Slither 0 · `f9b9066`
+> - **Gap 4** (IdentityRegistry) → 100% branches (13 tests) + Slither 0 (4 timestamp justificados) · `9c49a9c`
+>
+> Las opciones A/B/C de abajo quedan como registro histórico de la decisión.
 
 ### 🔴 Gap 1 — Integration / E2E tests (`test/integration/` VACÍO)
 
@@ -284,11 +297,11 @@ PATH="/Users/firrton/.foundry/bin:$PATH" slither . --filter-paths "lib|test|phas
 
 ## 9. Prompt sugerido para arrancar la próxima sesión
 
-> Estamos continuando la fase de smart contracts del proyecto tokenization-platform. Leé `docs/SMART-CONTRACTS-HANDOFF.md` que tiene todo el contexto: estado actual, metodología, gotchas del entorno (forge en `/Users/firrton/.foundry/bin/`, coverage OOM con invariants, slither setup), y los 4 gaps críticos con sus opciones.
+> Estamos continuando la fase de smart contracts del proyecto tokenization-platform. Leé `docs/SMART-CONTRACTS-HANDOFF.md`: estado actual, metodología (§3), gotchas del entorno (§4: forge en `/Users/firrton/.foundry/bin/`, el shell pierde el cwd, coverage OOM con invariants, slither setup).
 >
-> RedemptionManager.sol ya está cerrado (100% coverage, slither clean, 3 ADRs). Quiero arrancar con el **Gap 1 (Integration tests, Opción B)**: flujos E2E happy + lote fallido/refund + cancelación. Usá el mismo flujo paso-a-paso: explicá qué vas a hacer, mostrame el código, aplicá, verificá con forge test, esperá mi visto bueno.
+> Los 3 contratos del MVP están CERRADOS (100% branches + Slither 0). Los 4 gaps críticos se cerraron el 2026-05-28. Lo que queda: (a) documentación pendiente — reconciliar `docs/flows/01-deployment.md` (saca LabRegistry del MVP, es de 4 contratos) y `CONTRACT-SPECS.md` con el estado real; (b) gaps medios §7 (RM-29 invariant OOM, gas analysis de RedemptionManager, audit addendum); (c) deploy a Plume testnet (chainid 98867, RPC testnet-rpc.plume.org); (d) abrir el PR del feature branch (verificar `origin/main` primero — ver §2).
 >
-> Antes de empezar: confirmá el estado git (hay 4 commits en `feature/redemption-manager-option-b` sin mergear a main — habría que abrir PR #2).
+> Usá el flujo paso-a-paso: explicá qué vas a hacer, mostrame el código, aplicá, verificá con forge test, esperá mi visto bueno.
 
 ---
 
