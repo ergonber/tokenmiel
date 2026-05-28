@@ -80,12 +80,19 @@ interface IRedemptionManager {
         external
         returns (uint256 redencionId);
 
-    /// @notice Confirma la exportacion fisica y quema los tokens del comprador.
-    /// @dev Solo ORACLE_ROLE. No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).
+    /// @notice Registra la emision del DUE (fase 1 de 2 — ADR-017).
+    /// @dev Solo ORACLE_ROLE. Transiciona INICIADA → EN_EXPORTACION. No quema tokens todavia.
+    ///      No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).
     /// @param redencionId ID de la redencion a confirmar.
     /// @param dueNumero Numero de DUE (Declaracion Unica de Exportacion). Max 64 chars.
+    function confirmarExportacion(uint256 redencionId, string calldata dueNumero) external;
+
+    /// @notice Completa la redencion al recibir BL/AWB — quema tokens del comprador (fase 2 de 2 — ADR-017).
+    /// @dev Solo ORACLE_ROLE. Transiciona EN_EXPORTACION → COMPLETADA. Burn aqui.
+    ///      No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).
+    /// @param redencionId ID de la redencion a completar (debe estar en EN_EXPORTACION).
     /// @param hashBLAWB Hash del Bill of Lading o Air Waybill.
-    function confirmarExportacion(uint256 redencionId, string calldata dueNumero, bytes32 hashBLAWB) external;
+    function completarRedencion(uint256 redencionId, bytes32 hashBLAWB) external;
 
     /// @notice Cancela una redencion en curso, liberando el lock contable del comprador.
     /// @dev Solo ORACLE_ROLE. No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).

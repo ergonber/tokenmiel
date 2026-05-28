@@ -191,8 +191,11 @@ contract RedemptionManagerTest is BaseTest {
 
         uint256 balanceBefore = assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT);
 
+        // ADR-017: 2 fases. confirmarExportacion solo DUE, completarRedencion hace el burn.
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001", keccak256("BL-AWB"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL-AWB"));
 
         IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
         assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.COMPLETADA));
@@ -208,7 +211,7 @@ contract RedemptionManagerTest is BaseTest {
 
         vm.prank(BUYER_1);
         vm.expectRevert();
-        redemptionManager.confirmarExportacion(redencionId, "DUE", keccak256("BL"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE");
     }
 
     function test_confirmarExportacion_RevertWhen_RedencionAlreadyCompleted() public {
@@ -218,9 +221,9 @@ contract RedemptionManagerTest is BaseTest {
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
 
         vm.startPrank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE", keccak256("BL"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE");
         vm.expectRevert(RedemptionManager.RedencionAlreadyFinalized.selector);
-        redemptionManager.confirmarExportacion(redencionId, "DUE2", keccak256("BL2"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE2");
         vm.stopPrank();
     }
 
@@ -232,7 +235,7 @@ contract RedemptionManagerTest is BaseTest {
 
         vm.prank(ORACLE_SAFE);
         vm.expectRevert(RedemptionManager.EmptyDUE.selector);
-        redemptionManager.confirmarExportacion(redencionId, "", keccak256("BL"));
+        redemptionManager.confirmarExportacion(redencionId, "");
     }
 
     // ---- confirmarExportacion — nuevos tests RM-04, RM-10 ----
@@ -254,7 +257,7 @@ contract RedemptionManagerTest is BaseTest {
         // Act + Assert
         vm.prank(ORACLE_SAFE);
         vm.expectRevert(RedemptionManager.DUENumeroTooLong.selector);
-        redemptionManager.confirmarExportacion(redencionId, longDUE, keccak256("BL"));
+        redemptionManager.confirmarExportacion(redencionId, longDUE);
     }
 
     /// @dev RM-10: el string exactamente en el límite (64 chars) debe pasar.
@@ -267,9 +270,11 @@ contract RedemptionManagerTest is BaseTest {
         // String de exactamente 64 caracteres
         string memory maxDUE = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 64 chars
 
-        // Act: no debe revertir
+        // ADR-017: confirmar + completar (DUE 64 chars exactos debe pasar el check de longitud)
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, maxDUE, keccak256("BL"));
+        redemptionManager.confirmarExportacion(redencionId, maxDUE);
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL"));
 
         IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
         assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.COMPLETADA));
@@ -296,14 +301,18 @@ contract RedemptionManagerTest is BaseTest {
         vm.prank(BUYER_2);
         uint256 redencionId2 = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship-2"));
 
-        // Oracle confirma la redencion de BUYER_1 — burn de 10 tokens
+        // Oracle confirma + completa la redencion de BUYER_1 — burn de 10 tokens
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId1, "DUE-001", keccak256("BL-1"));
+        redemptionManager.confirmarExportacion(redencionId1, "DUE-001");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId1, keccak256("BL-1"));
         assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), 0, "BUYER_1 debe tener 0 tokens");
 
-        // Oracle confirma la redencion de BUYER_2 — debe funcionar normalmente
+        // Oracle confirma + completa la redencion de BUYER_2
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId2, "DUE-002", keccak256("BL-2"));
+        redemptionManager.confirmarExportacion(redencionId2, "DUE-002");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId2, keccak256("BL-2"));
         assertEq(assetVault.balanceOf(BUYER_2, LOTE_ID_DEFAULT), 0, "BUYER_2 debe tener 0 tokens");
     }
 
@@ -316,9 +325,11 @@ contract RedemptionManagerTest is BaseTest {
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
         assertEq(redemptionManager.availableBalance(BUYER_1, LOTE_ID_DEFAULT), 10, "despues de lock, available = 10");
 
-        // Act: confirmar exportación
+        // Act: ADR-017 — confirmar (solo DUE, sin burn aun) + completar (burn aqui)
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001", keccak256("BL-AWB"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL-AWB"));
 
         // Assert: el lock se liberó, pero el balance también bajó (burn).
         // BUYER_1 tenía 20 - 10 burn = 10 tokens, y el lock volvió a 0.
@@ -344,17 +355,25 @@ contract RedemptionManagerTest is BaseTest {
         assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), 20);
     }
 
+    /// @dev ADR-017: cancel revierte si redencion ya esta COMPLETADA.
+    ///      IMPORTANTE: cancel desde EN_EXPORTACION SI esta permitido (checkpoint operacional),
+    ///      por eso necesitamos ejecutar el flow completo (confirmar + completar) antes de probar el revert.
     function test_cancelarRedencion_RevertWhen_AlreadyCompleted() public {
         _advanceToAlmacenado();
 
         vm.prank(BUYER_1);
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
 
-        vm.startPrank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE", keccak256("BL"));
+        // Flow completo hasta COMPLETADA
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL"));
+
+        // Ahora cancelar debe revertir (ya esta COMPLETADA, no INICIADA ni EN_EXPORTACION)
+        vm.prank(ORACLE_SAFE);
         vm.expectRevert(RedemptionManager.RedencionAlreadyFinalized.selector);
         redemptionManager.cancelarRedencion(redencionId, keccak256("reason"));
-        vm.stopPrank();
     }
 
     // ---- cancelarRedencion — nuevos tests RM-01, RM-14 ----
@@ -461,16 +480,18 @@ contract RedemptionManagerTest is BaseTest {
         vm.prank(BUYER_1);
         uint256 redencionId2 = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship-2"));
 
-        // Confirmar redencionId2 primero — quema los 10 tokens restantes no lockeados... espera,
-        // BUYER_1 tiene 20 tokens y los 2 redencionIds acumulan 20 tokens lockeados en total.
-        // Confirmamos redencionId2 (quema 10), dejando a BUYER_1 con 10 tokens.
+        // ADR-017: flujo de 2 fases por redencion. Completamos redencionId2 primero (quema 10).
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId2, "DUE-TMP", keccak256("BL-TMP"));
+        redemptionManager.confirmarExportacion(redencionId2, "DUE-TMP");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId2, keccak256("BL-TMP"));
         assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), 10, "BUYER_1 debe tener 10 tras primer burn");
 
-        // Ahora confirmamos redencionId (por 10 tokens) — BUYER_1 tiene exactamente 10, debe pasar
+        // Ahora completamos redencionId (por 10 tokens) — BUYER_1 tiene exactamente 10, debe pasar
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-001", keccak256("BL-001"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL-001"));
         assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), 0, "BUYER_1 debe tener 0 tras segundo burn");
     }
 
@@ -482,12 +503,18 @@ contract RedemptionManagerTest is BaseTest {
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 20, keccak256("ship"));
         assertEq(redemptionManager.tokensLockedFor(BUYER_1, LOTE_ID_DEFAULT), 20, "lock debe ser 20 post-iniciar");
 
-        // Act
+        // ADR-017: confirmar NO libera lock (solo registra DUE). completar SI libera lock + burn.
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001", keccak256("BL-AWB"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001");
+        assertEq(
+            redemptionManager.tokensLockedFor(BUYER_1, LOTE_ID_DEFAULT),
+            20,
+            "lock NO debe cambiar post-confirmar (solo DUE registrado)"
+        );
 
-        // Assert: lock decrementó a 0
-        assertEq(redemptionManager.tokensLockedFor(BUYER_1, LOTE_ID_DEFAULT), 0, "lock debe ser 0 post-confirmar");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL-AWB"));
+        assertEq(redemptionManager.tokensLockedFor(BUYER_1, LOTE_ID_DEFAULT), 0, "lock debe ser 0 post-completar");
     }
 
     /// @dev RM-01: tokensLockedFor baja a 0 después de cancelar.
@@ -653,8 +680,8 @@ contract RedemptionManagerTest is BaseTest {
         redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 5, keccak256("ship"));
     }
 
-    /// @dev RM-25 + RM-05: confirmarExportacion NO usa whenNotPaused por diseno
-    ///      (CONTRACT-SPECS §6.13.8). El oracle puede completar redenciones en curso aun durante pausa.
+    /// @dev RM-25 + RM-05 + ADR-017: confirmarExportacion Y completarRedencion NO usan whenNotPaused
+    ///      por diseno (CONTRACT-SPECS §6.13.8). El oracle puede ejecutar ambas fases aun durante pausa.
     function test_confirmarExportacion_DoesNotRevertWhen_Paused() public {
         _advanceToAlmacenado();
 
@@ -665,9 +692,11 @@ contract RedemptionManagerTest is BaseTest {
         vm.prank(COMPLIANCE_OFFICER);
         redemptionManager.pause();
 
-        // El oracle puede confirmar igual
+        // El oracle puede confirmar + completar igual (ambas funciones sin whenNotPaused)
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001", keccak256("BLAWB"));
+        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL-AWB"));
 
         IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
         assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.COMPLETADA));
@@ -797,23 +826,24 @@ contract RedemptionManagerTest is BaseTest {
     // RM-18: actor indexed en eventos de redencion para forensics
     // ==========================================================================
 
-    /// @dev RM-18: confirmarExportacion emite RedencionEnExportacion y RedencionCompletada
-    ///      con msg.sender (Safe signer del Oracle) como actor indexed.
+    /// @dev RM-18 + ADR-017: confirmarExportacion emite RedencionEnExportacion, completarRedencion
+    ///      emite RedencionCompletada. Cada uno con msg.sender (Safe signer del Oracle) como actor indexed.
     function test_confirmarExportacion_EmitsEventsWithActor() public {
         _advanceToAlmacenado();
         vm.prank(BUYER_1);
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
 
-        // Verificar RedencionEnExportacion
+        // Verificar RedencionEnExportacion emitido por confirmarExportacion
         vm.expectEmit(true, true, false, true, address(redemptionManager));
         emit IRedemptionManager.RedencionEnExportacion(redencionId, ORACLE_SAFE, "DUE-2026-001");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001");
 
-        // Verificar RedencionCompletada (mismo actor)
+        // Verificar RedencionCompletada emitido por completarRedencion
         vm.expectEmit(true, true, false, true, address(redemptionManager));
         emit IRedemptionManager.RedencionCompletada(redencionId, ORACLE_SAFE, keccak256("BLAWB"));
-
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001", keccak256("BLAWB"));
+        redemptionManager.completarRedencion(redencionId, keccak256("BLAWB"));
     }
 
     /// @dev RM-18: cancelarRedencion emite RedencionCancelada con msg.sender como actor indexed.
@@ -838,18 +868,23 @@ contract RedemptionManagerTest is BaseTest {
         uint256 nonExistentId = 999;
         vm.prank(ORACLE_SAFE);
         vm.expectRevert(RedemptionManager.RedencionNotIniciada.selector);
-        redemptionManager.confirmarExportacion(nonExistentId, "DUE-X", keccak256("BL"));
+        redemptionManager.confirmarExportacion(nonExistentId, "DUE-X");
     }
 
-    /// @dev Branch L190: confirmarExportacion con hashBLAWB == bytes32(0) revierte InvalidHash.
-    function test_confirmarExportacion_RevertWhen_HashBLAWBZero() public {
+    /// @dev ADR-017: hashBLAWB ahora se valida en completarRedencion (no en confirmarExportacion).
+    ///      hashBLAWB == bytes32(0) en completarRedencion revierte InvalidHash.
+    function test_completarRedencion_RevertWhen_HashBLAWBZero() public {
         _advanceToAlmacenado();
         vm.prank(BUYER_1);
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
 
+        // Avanzar a EN_EXPORTACION (precondicion de completarRedencion)
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
+
         vm.prank(ORACLE_SAFE);
         vm.expectRevert(RedemptionManager.InvalidHash.selector);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-001", bytes32(0));
+        redemptionManager.completarRedencion(redencionId, bytes32(0));
     }
 
     /// @dev RM-04 + Branch L194: confirmarExportacion con balance del comprador < cantidad revierte
@@ -857,10 +892,15 @@ contract RedemptionManagerTest is BaseTest {
     ///      (el lock acumulator garantiza balance >= cantidad). Usamos vm.mockCall para SIMULAR el
     ///      escenario hipotetico contra el que la defensa protege (bug futuro en ERC1155Supply,
     ///      path nuevo que bypasee el invariante, etc.). Test valida que el revert defensivo funciona.
-    function test_confirmarExportacion_DefensiveRevert_WhenBalanceMockedBelowCantidad() public {
+    /// @dev ADR-017: el check defensivo de balance se movio a completarRedencion (fase 2).
+    function test_completarRedencion_DefensiveRevert_WhenBalanceMockedBelowCantidad() public {
         _advanceToAlmacenado();
         vm.prank(BUYER_1);
         uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Avanzar a EN_EXPORTACION (confirmar no checkea balance)
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
 
         // Mock: balance del buyer reportado como 5 (< 10 que pidio)
         vm.mockCall(
@@ -871,7 +911,7 @@ contract RedemptionManagerTest is BaseTest {
 
         vm.prank(ORACLE_SAFE);
         vm.expectRevert(RedemptionManager.BalanceInsuficiente.selector);
-        redemptionManager.confirmarExportacion(redencionId, "DUE-001", keccak256("BL"));
+        redemptionManager.completarRedencion(redencionId, keccak256("BL"));
 
         vm.clearMockedCalls();
     }
@@ -980,5 +1020,141 @@ contract RedemptionManagerTest is BaseTest {
         vm.prank(BUYER_2);
         vm.expectRevert(RedemptionManager.OnlyAuthorizedCanceler.selector);
         redemptionManager.cancelarRedencion(redencionId, keccak256("random"));
+    }
+
+    // ==========================================================================
+    // ADR-017: state machine 3 fases (INICIADA → EN_EXPORTACION → COMPLETADA)
+    // ==========================================================================
+
+    /// @dev ADR-017: confirmarExportacion transiciona a EN_EXPORTACION (no a COMPLETADA).
+    function test_confirmarExportacion_TransitionsTo_EnExportacion() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-2026-001");
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.EN_EXPORTACION));
+        assertEq(r.dueNumero, "DUE-2026-001");
+        // BL/AWB no se registra todavia
+        assertEq(r.hashBLAWB, bytes32(0));
+    }
+
+    /// @dev ADR-017: confirmarExportacion NO quema tokens (solo registra DUE).
+    function test_confirmarExportacion_DoesNotBurnTokens() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        uint256 balanceBefore = assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT);
+
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
+
+        // Balance idéntico — no se quemo nada
+        assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), balanceBefore);
+    }
+
+    /// @dev ADR-017: completarRedencion happy path — transiciona a COMPLETADA y quema tokens.
+    function test_completarRedencion_HappyPath_BurnsTokens() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        uint256 balanceBefore = assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT);
+
+        // Fase 1: DUE
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
+
+        // Fase 2: BL/AWB + burn
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL-AWB"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.COMPLETADA));
+        assertEq(r.hashBLAWB, keccak256("BL-AWB"));
+        assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), balanceBefore - 10);
+    }
+
+    /// @dev ADR-017: completarRedencion revierte si la redencion NO esta en EN_EXPORTACION.
+    function test_completarRedencion_RevertWhen_RedencionNotInExportacion() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Intentar completar directo desde INICIADA (sin pasar por confirmarExportacion)
+        vm.prank(ORACLE_SAFE);
+        vm.expectRevert(RedemptionManager.NotInExportacion.selector);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL"));
+    }
+
+    /// @dev ADR-017: completarRedencion revierte si la redencion no existe.
+    function test_completarRedencion_RevertWhen_RedencionNotIniciada() public {
+        uint256 nonExistentId = 999;
+        vm.prank(ORACLE_SAFE);
+        vm.expectRevert(RedemptionManager.RedencionNotIniciada.selector);
+        redemptionManager.completarRedencion(nonExistentId, keccak256("BL"));
+    }
+
+    /// @dev ADR-017: completarRedencion solo ORACLE_ROLE.
+    function test_completarRedencion_OnlyOracle_RevertWhen_NonOracle() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
+
+        // BUYER_1 no es Oracle
+        vm.prank(BUYER_1);
+        vm.expectRevert(); // OZ AccessControl
+        redemptionManager.completarRedencion(redencionId, keccak256("BL"));
+    }
+
+    /// @dev ADR-017 + RM-05: completarRedencion NO usa whenNotPaused por diseno.
+    function test_completarRedencion_DoesNotRevertWhen_Paused() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
+
+        // Pausar despues de confirmar pero antes de completar
+        vm.prank(COMPLIANCE_OFFICER);
+        redemptionManager.pause();
+
+        // Oracle puede completar igual
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(redencionId, keccak256("BL-AWB"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.COMPLETADA));
+    }
+
+    /// @dev ADR-017: cancelarRedencion desde EN_EXPORTACION (checkpoint operacional).
+    ///      Caso real: goods se detienen en aduana post-DUE pero pre-BL/AWB.
+    function test_cancelarRedencion_FromEnExportacion_HappyPath() public {
+        _advanceToAlmacenado();
+        vm.prank(BUYER_1);
+        uint256 redencionId = redemptionManager.iniciarRedencion(LOTE_ID_DEFAULT, 10, keccak256("ship"));
+
+        // Avanzar a EN_EXPORTACION
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.confirmarExportacion(redencionId, "DUE-001");
+
+        // Oracle decide cancelar desde EN_EXPORTACION (aduana rechazo, p.ej.)
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.cancelarRedencion(redencionId, keccak256("aduana-rechazo"));
+
+        IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(redencionId);
+        assertEq(uint8(r.estado), uint8(IRedemptionManager.EstadoRedencion.CANCELADA));
+        // Lock liberado correctamente desde el estado intermedio
+        assertEq(redemptionManager.tokensLockedFor(BUYER_1, LOTE_ID_DEFAULT), 0);
+        // Tokens NO quemados (cancel preserva balance)
+        assertEq(assetVault.balanceOf(BUYER_1, LOTE_ID_DEFAULT), 20);
     }
 }

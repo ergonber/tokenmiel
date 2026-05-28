@@ -72,8 +72,11 @@ contract RedemptionManagerHandler is BaseTest {
         bytes32 blawbHash = keccak256(abi.encodePacked(hashSeed, "BL-AWB"));
         if (blawbHash == bytes32(0)) blawbHash = keccak256("fallback-bl");
 
+        // ADR-017: flujo de 2 fases. Confirmar DUE, después completar con BL/AWB (burn aqui).
         vm.prank(ORACLE_SAFE);
-        redemptionManager.confirmarExportacion(rid, "DUE-INVARIANT-TEST", blawbHash);
+        redemptionManager.confirmarExportacion(rid, "DUE-INVARIANT-TEST");
+        vm.prank(ORACLE_SAFE);
+        redemptionManager.completarRedencion(rid, blawbHash);
     }
 
     /// @dev Getter para el buyer de este handler

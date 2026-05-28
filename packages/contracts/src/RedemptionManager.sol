@@ -75,6 +75,9 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
 
     /// @dev ADR-016: error usado por pause() cuando el caller no tiene COMPLIANCE_OFFICER ni DEFAULT_ADMIN.
     error UnauthorizedPauseActor();
+
+    /// @dev ADR-017: error usado por completarRedencion() cuando la redencion no esta en EN_EXPORTACION.
+    error NotInExportacion();
     error InvalidHash();
     error RedencionNotIniciada();
     error RedencionAlreadyFinalized();
@@ -171,22 +174,15 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     }
 
     /// @inheritdoc IRedemptionManager
-    /// @notice Confirma la exportacion fisica quemando los tokens del comprador.
-    /// @dev Solo ORACLE_ROLE (Safe 2-de-3). NO usa `whenNotPaused` por diseno (CONTRACT-SPECS §6.13.8):
-    ///      una vez iniciada una redencion, el flujo de exportacion debe poder completarse o cancelarse
-    ///      incluso si el contrato se pausa por incidente. Pausar bloquea solo `iniciarRedencion`.
+    /// @notice Registra la emision del DUE (Declaracion Unica de Exportacion) por SENASAG.
+    /// @dev ADR-017 (fase 1 de 2): transiciona INICIADA → EN_EXPORTACION. NO quema tokens todavia.
+    ///      Solo ORACLE_ROLE (Safe 2-de-3). NO usa whenNotPaused por diseno (CONTRACT-SPECS §6.13.8).
     /// @custom:security
     ///   - NO usa whenNotPaused por diseno — ver CONTRACT-SPECS §6.13.8.
-    ///   - CEI estricto: (1) Checks (estado, DUE, hash, balance), (2) Effects (estado, lock decrement,
-    ///     campos), (3) Interactions (burn via AssetVault).
+    ///   - NO decrementa el lock acumulator ni quema tokens — el lock se libera en completarRedencion.
     ///   - El Oracle Safe es responsable de NO confirmar exportaciones durante un incidente
     ///     que afecte la cadena de custodia fisica.
-    ///   - RM-04: pre-validacion de balance antes de state changes para fail fast.
-    function confirmarExportacion(uint256 redencionId, string calldata dueNumero, bytes32 hashBLAWB)
-        external
-        onlyRole(ORACLE_ROLE)
-        nonReentrant
-    {
+    function confirmarExportacion(uint256 redencionId, string calldata dueNumero) external onlyRole(ORACLE_ROLE) {
         // ---- Checks ----
         Redencion storage r = _redenciones[redencionId];
         if (r.comprador == address(0)) revert RedencionNotIniciada();
@@ -196,6 +192,30 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         if (dueBytes.length == 0) revert EmptyDUE();
         if (dueBytes.length > MAX_DUE_NUMERO_LENGTH) revert DUENumeroTooLong();
 
+        // ---- Effects ----
+        r.estado = EstadoRedencion.EN_EXPORTACION;
+        r.dueNumero = dueNumero;
+
+        // ---- Interactions (none) ----
+        // RM-18: actor indexed para forensics (que Safe signer registro el DUE)
+        emit RedencionEnExportacion(redencionId, msg.sender, dueNumero);
+    }
+
+    /// @inheritdoc IRedemptionManager
+    /// @notice Completa la redencion al recibir BL/AWB — quema los tokens del comprador.
+    /// @dev ADR-017 (fase 2 de 2): transiciona EN_EXPORTACION → COMPLETADA. Burn aqui.
+    ///      Solo ORACLE_ROLE (Safe 2-de-3). NO usa whenNotPaused por diseno (CONTRACT-SPECS §6.13.8).
+    /// @custom:security
+    ///   - NO usa whenNotPaused por diseno — ver CONTRACT-SPECS §6.13.8.
+    ///   - CEI estricto: (1) Checks (estado, hash, balance), (2) Effects (estado, lock decrement,
+    ///     campos), (3) Interactions (burn via AssetVault).
+    ///   - RM-04: pre-validacion defensiva de balance — branch dead-code bajo Opcion B, pero
+    ///     protege contra hipoteticos bugs en ERC1155Supply o paths futuros.
+    function completarRedencion(uint256 redencionId, bytes32 hashBLAWB) external onlyRole(ORACLE_ROLE) nonReentrant {
+        // ---- Checks ----
+        Redencion storage r = _redenciones[redencionId];
+        if (r.comprador == address(0)) revert RedencionNotIniciada();
+        if (r.estado != EstadoRedencion.EN_EXPORTACION) revert NotInExportacion();
         if (hashBLAWB == bytes32(0)) revert InvalidHash();
 
         // RM-04: pre-validacion de balance para fail fast (antes de cualquier state change)
@@ -207,11 +227,10 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         _tokensLockedFor[r.loteId][r.comprador] -= r.cantidadTokens;
 
         r.estado = EstadoRedencion.COMPLETADA;
-        r.dueNumero = dueNumero;
         r.hashBLAWB = hashBLAWB;
         r.completedAt = uint64(block.timestamp);
 
-        // Capturar valores locales para el burn (evita re-reads de storage tras cambio de estado)
+        // Capturar valores locales para el burn
         address comprador = r.comprador;
         uint256 loteId = r.loteId;
         uint256 cantidadTokens = r.cantidadTokens;
@@ -220,8 +239,7 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         // Burn delegado al AssetVault — unica via permitida de burn
         assetVault.burnForRedemption(comprador, loteId, cantidadTokens);
 
-        // RM-18: actor indexed para forensics (que Safe signer ejecuto la exportacion)
-        emit RedencionEnExportacion(redencionId, msg.sender, dueNumero);
+        // RM-18: actor indexed para forensics
         emit RedencionCompletada(redencionId, msg.sender, hashBLAWB);
     }
 
@@ -241,7 +259,11 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         // ---- Checks ----
         Redencion storage r = _redenciones[redencionId];
         if (r.comprador == address(0)) revert RedencionNotIniciada();
-        if (r.estado != EstadoRedencion.INICIADA) revert RedencionAlreadyFinalized();
+        // ADR-017: se puede cancelar desde INICIADA o EN_EXPORTACION (checkpoint operacional).
+        //          Si goods se detienen en aduana post-DUE, Oracle/Compliance pueden cancelar.
+        if (r.estado != EstadoRedencion.INICIADA && r.estado != EstadoRedencion.EN_EXPORTACION) {
+            revert RedencionAlreadyFinalized();
+        }
         if (reason == bytes32(0)) revert EmptyReason();
 
         // ADR-015: tres paths de access control evaluados inline
