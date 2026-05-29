@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-A retail buyer discovers a honey lot on the platform, selects the quantity of tokens, and pays via MoonPay (credit card → USDC). The backend confirms the payment, deducts a technical reserve (15-20% of payment), transfers the net amount to the producer SRL wallet, and mints ERC-1155 tokens to the buyer's wallet. The entire on-chain operation is one transaction signed by the backend signer (HSM), not by the buyer. The buyer only needs a wallet address — gas is paid by the backend.
+A retail buyer discovers a honey lot on the platform, selects the quantity of tokens, and pays via MoonPay (credit card → USDC). The backend confirms the payment, pre-funds `AssetVault` with the USDC, and calls `comprar()` which mints ERC-1155 tokens to the buyer's wallet and retains ALL USDC in escrow inside the contract. The technical reserve (15-20%) and the net amount both remain in the contract: the net amount is released to the producer in `confirmarCosecha()`, and the reserve in `liberarReservaTecnica()`. The entire on-chain operation is one transaction signed by the backend signer (HSM), not by the buyer. The buyer only needs a wallet address — gas is paid by the backend.
 
 This flow requires an active lot in `PREVENTA` state. See `01-deployment.md` and the `crearLote` prerequisite below.
 
@@ -15,7 +15,7 @@ This flow requires an active lot in `PREVENTA` state. See `01-deployment.md` and
 - **📜 AssetVault** — ERC-1155 contract. Manages lot state and mints tokens.
 - **📜 IdentityRegistry** — KYC whitelist consulted by `AssetVault` before every mint.
 - **💰 MoonPay** — Payment provider. Converts card payment to USDC. Delivers USDC to backend's operational wallet.
-- **🏢 Producer SRL** — Honey producer. Receives USDC net amount after reserve deduction.
+- **🏢 Producer SRL** — Honey producer. Receives USDC net amount after harvest confirmation (`confirmarCosecha()`), not at purchase time.
 
 ---
 
@@ -26,7 +26,7 @@ This flow requires an active lot in `PREVENTA` state. See `01-deployment.md` and
 - Lot `kgDisponibles > 0` (tokens available).
 - Backend has pre-transferred USDC (from MoonPay payout) to the `AssetVault` contract before calling `comprar()`.
 
-> **Architecture note:** The contract does NOT pull USDC from MoonPay. The payment flow is: MoonPay → backend operational wallet → `AssetVault` contract address → `comprar()` distributes internally. The `comprar()` function assumes USDC is already in the contract.
+> **Architecture note (escrow total — FIX H-01):** `comprar()` does NOT transfer USDC to the producer. ALL USDC stays inside `AssetVault`: `lote.reservaTecnicaUSDC += reservaRetenida` and `lote.montoNetoPendiente += montoNeto`. The net amount is released to the producer only in `confirmarCosecha()` (after real harvest is validated); the reserve is released via `liberarReservaTecnica()` (callable from `COSECHADO` onwards). This guarantees 100% on-chain refund if the lot fails before harvest. Payment flow: MoonPay → backend operational wallet → `AssetVault` contract address → `comprar()` records internally.
 
 ---
 
@@ -67,12 +67,13 @@ This flow requires an active lot in `PREVENTA` state. See `01-deployment.md` and
 📜 AV       --> 📜 IR        : canMint(BUYER_1)  [external call]
 📜 IR       --> 📜 AV        : true
 
-📜 AV       --> 📜 AV        : kgYaVendidos = totalSupply(7) * 500 / 1000 = 40 kg
-📜 AV       --> 📜 AV        : kgSolicitados = 10 * 500 / 1000 = 5 kg
-📜 AV       --> 📜 AV        : 40 + 5 > 100 kg? → false ✓
+📜 AV       --> 📜 AV        : gramosYaVendidos = totalSupply(7) * GRAMOS_POR_TOKEN = 80*500 = 40_000 g
+📜 AV       --> 📜 AV        : gramosSolicitados = 10 * 500 = 5_000 g
+📜 AV       --> 📜 AV        : gramosEsperados = 100 * 1000 = 100_000 g
+📜 AV       --> 📜 AV        : 40_000 + 5_000 > 100_000? → false ✓
 
-NOTE ⚠️ H-02: This calculation truncates for odd token amounts. If kgSolicitados=1,
-      1*500/1000=0, allowing silent capacity overshoot. Fix required before mainnet.
+NOTE ✅ H-02 FIXED: capacity check now uses exact grams (no division before summing).
+      gramosYaVendidos + gramosSolicitados <= gramosEsperados — integer truncation eliminated.
 
 📜 AV       --> 📜 AV        : montoEsperado = 10 * 20_000000 = 200_000000 USDC
 📜 AV       --> 📜 AV        : 200_000000 >= 200_000000 ✓
@@ -81,25 +82,25 @@ NOTE ⚠️ H-02: This calculation truncates for odd token amounts. If kgSolicit
                                = 200_000000 * 1500 / 10000 = 30_000000 USDC (15%)
 📜 AV       --> 📜 AV        : montoNeto = 200_000000 - 30_000000 = 170_000000 USDC
 
-📜 AV       --> 📜 AV        : lote.reservaTecnicaUSDC += 30_000000  [EFFECT]
+📜 AV       --> 📜 AV        : lote.reservaTecnicaUSDC += 30_000000  [EFFECT / ESCROW]
+📜 AV       --> 📜 AV        : lote.montoNetoPendiente += 170_000000  [EFFECT / ESCROW]
+                               (NO safeTransfer to producer — FIX H-01: full escrow until confirmarCosecha)
 
 📜 AV       --> 📜 AV        : _mint(BUYER_1, loteId=7, cantidadTokens=10, "")  [EFFECT]
 
   (inside _mint, _update is called)
   📜 AV._update --> 📜 AV    : isMint=true, isBurn=false
-  📜 AV._update --> 📜 IR    : canMint(BUYER_1)  [double-check in _update]
+  📜 AV._update --> 📜 IR    : canMint(BUYER_1)  [KYC enforced in _update override]
   📜 IR         --> 📜 AV    : true
   📜 AV._update --> ERC1155  : super._update(address(0), BUYER_1, [7], [10])  [EFFECT]
 
 🎫 Token    ~~> 🚨 Event     : TransferSingle(BACKEND_SIGNER, 0x0, BUYER_1, 7, 10)
 
-📜 AV       --> 💰 USDC      : safeTransfer(lote.productorSRL, 170_000000)  [INTERACTION]
-💰 USDC     ~~> 🚨 Event     : Transfer(AV_ADDR, PRODUCTOR_SRL, 170_000000)
-
 📜 AV       ~~> 🚨 Event     : LoteComprado(loteId=7, comprador=BUYER_1, cantidadTokens=10,
                                             montoUSDCPagado=200_000000,
                                             reservaRetenida=30_000000,
                                             paymentRefHash=0x9821...)
+                               (no USDC Transfer event — producer receives payment later in confirmarCosecha)
 
 🤖 Backend  <-- 📜 AV        : tx confirmed
 
@@ -134,7 +135,7 @@ NOTE ⚠️ H-02: This calculation truncates for odd token amounts. If kgSolicit
 ### Step 3 — USDC Transfer to AssetVault
 
 - **Actor:** Backend
-- **Why:** `comprar()` expects USDC already present in the contract. The net amount is then forwarded to the producer SRL, and the reserve is retained.
+- **Why:** `comprar()` expects USDC already present in the contract. Both the technical reserve and the net amount remain in the contract as escrow (FIX H-01). The producer receives the net amount later via `confirmarCosecha()` and the reserve via `liberarReservaTecnica()`.
 - **Function:** `USDC.transfer(assetVaultAddress, montoUSDCPagado)` — signed by backend HSM
 - **Gas estimated:** ~50k (ERC-20 transfer)
 
@@ -147,19 +148,20 @@ NOTE ⚠️ H-02: This calculation truncates for odd token amounts. If kgSolicit
   2. `lote.estado == PREVENTA` — lot is in presale
   3. `cantidadTokens > 0`
   4. `paymentRefHash != bytes32(0)`
-  5. `identityRegistry.canMint(comprador)` — KYC check
-  6. Capacity check (kg sold + kg requested <= kgEsperados) ⚠️ H-02
+  5. KYC check runs inside `_update()` override (`identityRegistry.canMint(comprador)`) — NOT duplicated in `comprar()` itself
+  6. Capacity check: `gramosYaVendidos + gramosSolicitados <= gramosEsperados` (exact grams — FIX H-02, truncation eliminated)
   7. `montoUSDCPagado >= cantidadTokens * lote.precioPorTokenUSDC` — payment sufficient
-- **State changes:**
+- **State changes (FIX H-01 — escrow total):**
   - `lote.reservaTecnicaUSDC += reservaRetenida`
+  - `lote.montoNetoPendiente += montoNeto`
   - `ERC-1155 balanceOf(buyer, loteId) += cantidadTokens`
 - **USDC flows:**
-  - Retained in contract: `reservaRetenida` (15-20%)
-  - Transferred to producer SRL: `montoNeto` (80-85%)
+  - ALL USDC stays in the contract — no transfer to producer in `comprar()`
+  - `reservaRetenida` (15-20%): released later via `liberarReservaTecnica()` (from `COSECHADO` state onwards)
+  - `montoNeto` (80-85%): released to producer SRL in `confirmarCosecha()` after real harvest is validated
 - **Events emitted:**
   - `LoteComprado(loteId, comprador, cantidadTokens, montoUSDCPagado, reservaRetenida, paymentRefHash)`
   - `TransferSingle(operator, 0x0, comprador, loteId, cantidadTokens)` (from ERC-1155 mint)
-  - `Transfer(assetVaultAddr, productorSRL, montoNeto)` (from USDC)
 - **Gas estimated:** ~110k
 
 ---
@@ -168,8 +170,9 @@ NOTE ⚠️ H-02: This calculation truncates for odd token amounts. If kgSolicit
 
 - Buyer's wallet holds `cantidadTokens` of `loteId` in `AssetVault`.
 - `AssetVault.reservaTecnicaActual(loteId)` increased by `reservaRetenida`.
-- Producer SRL wallet received `montoNeto` USDC.
+- `lote.montoNetoPendiente` increased by `montoNeto` (escrow — producer does NOT receive USDC yet).
 - `AssetVault.totalSupply(loteId)` increased by `cantidadTokens`.
+- All USDC (reserve + net) remains in `AssetVault` contract until `confirmarCosecha()`.
 - `payment_intent` record in DB marked `minted` with on-chain tx hash.
 - Audit log entry in PostgreSQL with tx hash, Arweave reference, buyer address (hashed for privacy).
 
@@ -212,8 +215,10 @@ Reserve calc:
 Post-tx state:
   BUYER_1.balance(loteId=7)  = 10 tokens
   totalSupply(7)             = 90 tokens
-  lote.reservaTecnicaUSDC    += 30 USDC  (total reserve if 0 before: 30 USDC)
-  productorSRL received       = 170 USDC
+  lote.reservaTecnicaUSDC    += 30 USDC   (escrow — released later via liberarReservaTecnica)
+  lote.montoNetoPendiente    += 170 USDC  (escrow — released to producer in confirmarCosecha)
+  AssetVault USDC balance    += 200 USDC  (all funds retained in contract)
+  productorSRL received       = 0 USDC    (receives 170 USDC only when confirmarCosecha is called)
 
 EU withdrawal hold:
   14-day hold inserted (MiCA consumer protection).
@@ -225,12 +230,19 @@ EU withdrawal hold:
 
 ## Known Bugs Relevant to This Flow
 
-**⚠️ H-02 — Overmint due to integer division in capacity check**
+**✅ H-02 — Overmint via integer division — FIXED**
 
-File: `AssetVault.sol:213-215`
+File: `AssetVault.sol` — `comprar()` capacity check
 
-The current check divides by 1000 before summing. For odd token counts (e.g., 1 token), `1 * 500 / 1000 = 0` due to integer truncation, bypassing the capacity guard.
+**Original bug (resolved):** The old check divided token counts by 1000 before summing (`totalSupply * 500 / 1000`). For odd token counts (e.g., 1 token), `1 * 500 / 1000 = 0` due to integer truncation, allowing the capacity guard to be bypassed.
 
-Practical impact at scale: after exactly 200 tokens minted (100 kg), a 1-token purchase is blocked correctly (100 + 0 > 100 → fails). But between 199 and 200 tokens, a 1-token purchase computes `199*500/1000 = 99` + `0` = `99 <= 100` → passes, minting token 200 correctly. The bug manifests only at the exact boundary. Under normal backend operation (which controls the flow), this is unlikely to be triggered accidentally, but it breaks the formal invariant.
+**Fix applied:** The check now operates entirely in grams, multiplying FIRST and comparing exact sums:
 
-Fix pending before mainnet (see audit H-02).
+```solidity
+uint256 gramosYaVendidos  = totalSupply(loteId) * ComplianceConstants.GRAMOS_POR_TOKEN;
+uint256 gramosSolicitados = cantidadTokens      * ComplianceConstants.GRAMOS_POR_TOKEN;
+uint256 gramosEsperados   = lote.kgEsperados    * 1000;
+if (gramosYaVendidos + gramosSolicitados > gramosEsperados) revert KgSolicitadosExcedenSupply();
+```
+
+`GRAMOS_POR_TOKEN` cancels out algebraically, so the comparison is equivalent to `totalSupply + cantidadTokens <= kgEsperados * 2` (for 500g tokens), with no intermediate truncation. The formal invariant is now sound.

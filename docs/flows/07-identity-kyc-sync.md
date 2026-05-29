@@ -22,6 +22,7 @@ A new user completes the KYC identity verification process through Sumsub, trigg
 - Backend has a valid Sumsub `applicantId` associated with the user's wallet address (stored in `identity` table in PostgreSQL)
 - `IdentityRegistry` is deployed with `BACKEND_SIGNER_ROLE` granted to the backend signer wallet
 - Backend signer wallet holds enough native gas tokens (PLM on Plume Network) to pay for the `setKYC` transaction
+- `IdentityRegistry` is **not paused** — `setKYC` is a mutator and requires `whenNotPaused` (FIX H-02)
 
 ---
 
@@ -113,17 +114,20 @@ Sumsub emits webhooks on state transitions. The backend acts only on `applicantR
                                 )
                                 [signed by BACKEND_SIGNER_ROLE wallet via KMS]
 
-📜 IR        --> 📜 IR        : validate user != address(0)                   ✓
-📜 IR        --> 📜 IR        : validate tier <= MAX_KYC_TIER (3)             ✓
-📜 IR        --> 📜 IR        : validate expiresAt > block.timestamp          ✓
+📜 IR        --> 📜 IR        : whenNotPaused check                          ✓ (FIX H-02)
+📜 IR        --> 📜 IR        : validate user != address(0)                   ✓ → ZeroAddressUser
+📜 IR        --> 📜 IR        : validate tier != 0                            ✓ → TierZeroNotAllowed (FIX M-04)
+📜 IR        --> 📜 IR        : validate tier <= MAX_KYC_TIER (3)             ✓ → InvalidTier
+📜 IR        --> 📜 IR        : validate expiresAt > block.timestamp          ✓ → ExpiryInPast
 📜 IR        --> 📜 IR        : _kyc[user].tier = 1                           [EFFECT]
 📜 IR        --> 📜 IR        : _kyc[user].expiresAt = 1780000000             [EFFECT]
 📜 IR        --> 📜 IR        : _kyc[user].updatedAt = block.timestamp        [EFFECT]
 📜 IR        --> 📜 IR        : _kyc[user].jurisdiction = 0x4445              [EFFECT]
 📜 IR        --> 📜 IR        : _kyc[user].sumsubApplicantHash = 0xabc123...  [EFFECT]
 
-📜 IR        ~~> 🚨 Event     : KYCUpdated(user: "0xAaaa...", tier: 1, expiresAt: 1780000000,
-                                           jurisdiction: 0x4445)
+📜 IR        ~~> 🚨 Event     : KYCUpdated(user: "0xAaaa...", actor: <BACKEND_SIGNER>,
+                                           tier: 1, expiresAt: 1780000000,
+                                           jurisdiction: 0x4445)             (FIX M-03)
 
 🤖 Backend   <-- 📜 IR        : tx confirmed (txHash: "0x...")
 
@@ -186,14 +190,29 @@ Expiry is set to `block.timestamp + 365 days` at the time the backend builds the
 
 ### Step 6 — `setKYC()` on-chain
 
-**Contract:** `IdentityRegistry.sol`, line 59–78
+**Contract:** `IdentityRegistry.sol`, function `setKYC`
 
 **Caller:** backend signer wallet (AWS/GCP KMS) holding `BACKEND_SIGNER_ROLE`
 
+**Signature:**
+```solidity
+function setKYC(
+    address user,
+    uint8 tier,
+    uint64 expiresAt,
+    bytes2 jurisdiction,
+    bytes32 sumsubApplicantHash
+) external onlyRole(BACKEND_SIGNER_ROLE) whenNotPaused
+```
+
 **Validations (fail-fast order):**
-1. `user != address(0)` → reverts `ZeroAddressUser()`
-2. `tier <= ComplianceConstants.MAX_KYC_TIER` (3) → reverts `InvalidTier()`
-3. `expiresAt > block.timestamp` → reverts `ExpiryInPast()`
+1. `whenNotPaused` — reverts if contract is paused (FIX H-02; only mutators are paused, views stay live)
+2. `user != address(0)` → reverts `ZeroAddressUser()`
+3. `tier == 0` → reverts `TierZeroNotAllowed()` (FIX M-04 — tier-0 downgrade uses `revokeKYC`, not `setKYC`)
+4. `tier > ComplianceConstants.MAX_KYC_TIER` (3) → reverts `InvalidTier()`
+5. `expiresAt <= block.timestamp` → reverts `ExpiryInPast()`
+
+> **Important:** to revoke a user's KYC (downgrade to tier 0), the backend must call `revokeKYC(address user, string reason)` instead. Calling `setKYC` with `tier=0` always reverts. This separates "never verified" (storage default) from "was verified and explicitly revoked".
 
 **State changes (all in one slot update — storage packed):**
 - `_kyc[user].tier` = new tier
@@ -202,13 +221,29 @@ Expiry is set to `block.timestamp + 365 days` at the time the backend builds the
 - `_kyc[user].jurisdiction` = ISO 3166-1 alpha-2 country code as `bytes2`
 - `_kyc[user].sumsubApplicantHash` = keccak256 of applicantId
 
-**Event emitted:** `KYCUpdated(address indexed user, uint8 tier, uint64 expiresAt, bytes2 jurisdiction)` (line 77)
+**Event emitted:** `KYCUpdated(address indexed user, address indexed actor, uint8 tier, uint64 expiresAt, bytes2 jurisdiction)` — `actor` is `msg.sender` (FIX M-03: indexed for forensics post-incident)
 
 **Gas estimate:**
 - First-time write (cold storage slots): ~58,000 gas
 - Update of existing record (warm slots): ~35,000 gas
 
 At 0.01 gwei on Plume, this costs approximately $0.03 per first-time setKYC.
+
+---
+
+### Pause asymmetry (FIX H-02)
+
+`IdentityRegistry` inherits `Pausable` and `AccessControlDefaultAdminRules` (3-day delay for `DEFAULT_ADMIN_ROLE` transfers, FIX M-08).
+
+| Function | Pausable? | Who can call |
+|---|---|---|
+| `setKYC` | Yes (`whenNotPaused`) | `BACKEND_SIGNER_ROLE` |
+| `revokeKYC` | Yes (`whenNotPaused`) | `BACKEND_SIGNER_ROLE` |
+| `pause()` | — | `COMPLIANCE_OFFICER_ROLE` **or** `DEFAULT_ADMIN_ROLE` |
+| `unpause()` | — | `DEFAULT_ADMIN_ROLE` only |
+| All view functions (`canMint`, `getTier`, etc.) | No — views always work | anyone |
+
+The asymmetric unpause (admin-only) prevents a compromised Compliance Officer from undoing an emergency pause.
 
 ---
 
@@ -236,6 +271,8 @@ At 0.01 gwei on Plume, this costs approximately $0.03 per first-time setKYC.
 | Plume RPC down | Backend queues the transaction locally, retries every 2 min | No tx confirmed until RPC recovers |
 | `expiresAt <= block.timestamp` | Backend must use a future timestamp; this only happens if backend clock drifts badly | Reverts `ExpiryInPast()` |
 | `tier > 3` | Should never happen with correct mapping, but protected by `InvalidTier()` | Reverts `InvalidTier()` |
+| `tier == 0` sent to `setKYC` | This is a logic error — use `revokeKYC(user, reason)` instead | Reverts `TierZeroNotAllowed()` (FIX M-04) |
+| Contract is paused | Backend must detect paused state before sending tx, queue until unpaused | Reverts `EnforcedPause()` (Pausable, FIX H-02) |
 | Duplicate webhook (Sumsub retries) | Step 4 re-fetch shows same status. `setKYC` can be called again safely — it overwrites with same values. Idempotent. | No revert — `setKYC` is a pure upsert |
 
 ---
@@ -268,9 +305,10 @@ Cost:             ~$0.03
 
 Events emitted:
   KYCUpdated(
-    user: 0xAaaa...,
-    tier: 1,
-    expiresAt: 1780000000,
+    user:        0xAaaa...,
+    actor:       <BACKEND_SIGNER wallet>,   // msg.sender, indexed (FIX M-03)
+    tier:        1,
+    expiresAt:   1780000000,
     jurisdiction: 0x4445
   )
 
