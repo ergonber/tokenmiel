@@ -1,5 +1,7 @@
 # Flow 04: Quality Attestation — 2 Labs, 4 Tests
 
+> **⚠️ FASE 2 — NO MVP (2026-05-28):** Este flujo (QualityAttestation con `LabRegistry`, `confirmarCalidad`, estado `QUALITY_ATTESTED`) fue **diferido a FASE 2** (ADR-010). En el MVP el lote transiciona directo de `COSECHADO` a `ALMACENADO` sin attestation de calidad on-chain, y la reserva técnica se libera vía `liberarReservaTecnica` (TREASURY_SRL_ROLE) post-cosecha. Este documento se conserva como referencia de la fase 2.
+
 ## Executive Summary
 
 After harvest confirmation, the lot enters quality verification. Two independent certified laboratories — one Bolivian (IBNORCA or equivalent) and one European (Eurofins, Intertek, or SGS) — independently analyze the honey using four scientific tests: palynology (pollen species and percentage), NMR spectroscopy (adulteration detection), C4 sugar test (AOAC 998.12), and residue analysis (pesticides/antibiotics). Each lab cryptographically signs their findings with their registered ECDSA key. The Oracle Safe collects both signatures and submits `confirmarCalidad()` on-chain. The contract validates both signatures against the LabRegistry, verifies jurisdictional diversity, and computes the `isMonofloralCertified` flag. Upon success, the lot transitions to `QUALITY_ATTESTED` and the technical reserve is released to the producer.

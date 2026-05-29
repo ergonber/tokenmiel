@@ -5,6 +5,8 @@
 **Author:** Dany Hidalgo F.
 **Tags:** smart-contracts, architecture, immutable, no-proxy
 
+> **⚠️ ACTUALIZACIÓN (2026-05-28) — parcialmente superseded por ADR-010:** El MVP se simplificó a **3 contratos** (`IdentityRegistry`, `AssetVault`, `RedemptionManager`). El 4to contrato (`LabRegistry`) y la `QualityAttestation` embebida en `AssetVault` fueron **diferidos a FASE 2** (`phase2/`, ADR-010). La decisión de inmutabilidad-sin-proxy y el `pause()` + migración v2 siguen plenamente vigentes para los 3 contratos del MVP.
+
 ---
 
 ## Context
