@@ -182,6 +182,30 @@ contract AssetVaultBranchesTest is BaseTest {
         freshVault.setRedemptionManager(address(0));
     }
 
+    // ---- Observability: setRedemptionManager emits RedemptionManagerSet ----
+
+    function test_setRedemptionManager_EmitsRedemptionManagerSet() public {
+        // Deploy a fresh vault without a RM set
+        AssetVault.InitParams memory p = AssetVault.InitParams({
+            admin: ADMIN,
+            adminOperator: ADMIN_OPERATOR,
+            backendSigner: BACKEND_SIGNER,
+            complianceOfficer: COMPLIANCE_OFFICER,
+            complianceOfficerSuplente: COMPLIANCE_OFFICER_SUPLENTE,
+            oracleSafe: ORACLE_SAFE,
+            treasurySRL: TREASURY_SRL,
+            usdc: usdc,
+            identityRegistry: identityRegistry,
+            uri: "https://meta.example/{id}.json"
+        });
+        AssetVault freshVault = new AssetVault(p);
+
+        vm.prank(ADMIN);
+        vm.expectEmit(true, true, false, true);
+        emit IAssetVault.RedemptionManagerSet(address(redemptionManager));
+        freshVault.setRedemptionManager(address(redemptionManager));
+    }
+
     // ---- Branch 167: setRedemptionManager twice (already set) ----
 
     function test_RevertWhen_SetRedemptionManager_AlreadySet() public {
@@ -514,8 +538,10 @@ contract AssetVaultBranchesTest is BaseTest {
         address[] memory buyers = new address[](1);
         buyers[0] = BUYER_1;
 
-        // Should NOT revert — early return sets _reembolsado = true
+        // Should NOT revert — early return sets _reembolsado = true and emits ReembolsoFinalizado
         vm.prank(ORACLE_SAFE);
+        vm.expectEmit(true, false, false, true);
+        emit IAssetVault.ReembolsoFinalizado(LOTE_ID_DEFAULT);
         assetVault.reembolsarLoteFallido(LOTE_ID_DEFAULT, buyers);
 
         // Verify _reembolsado is true by confirming finalizarReembolso reverts with ReembolsoYaEjecutado
@@ -584,6 +610,20 @@ contract AssetVaultBranchesTest is BaseTest {
         assetVault.finalizarReembolso(LOTE_ID_DEFAULT);
     }
 
+    // ---- Observability: finalizarReembolso emits ReembolsoFinalizado ----
+
+    function test_finalizarReembolso_EmitsReembolsoFinalizado() public {
+        _createLoteDefault();
+
+        vm.prank(ORACLE_SAFE);
+        assetVault.marcarFallido(LOTE_ID_DEFAULT, "Cosecha fallida");
+
+        vm.prank(ORACLE_SAFE);
+        vm.expectEmit(true, false, false, true);
+        emit IAssetVault.ReembolsoFinalizado(LOTE_ID_DEFAULT);
+        assetVault.finalizarReembolso(LOTE_ID_DEFAULT);
+    }
+
     // ---- Branch 418: finalizarReembolso twice → ReembolsoYaEjecutado ----
 
     function test_RevertWhen_FinalizarReembolso_ReembolsoYaEjecutado() public {
@@ -646,6 +686,36 @@ contract AssetVaultBranchesTest is BaseTest {
         vm.prank(address(redemptionManager));
         vm.expectRevert(AssetVault.CantidadTokensCero.selector);
         assetVault.burnForRedemption(BUYER_1, LOTE_ID_DEFAULT, 0);
+    }
+
+    // ---- Observability: burnForRedemption emits TokensRedimidos (ALMACENADO → REDENCION_PARCIAL) ----
+
+    function test_burnForRedemption_EmitsTokensRedimidos_PartialRedemption() public {
+        // _advanceToAlmacenado mints 20 tokens (10 kg) to BUYER_1, lote en ALMACENADO.
+        _advanceToAlmacenado();
+
+        // Burn 8 tokens = 4 kg. totalSupply queda en 12 → estado REDENCION_PARCIAL.
+        vm.prank(address(redemptionManager));
+        vm.expectEmit(true, true, false, true);
+        emit IAssetVault.TokensRedimidos(LOTE_ID_DEFAULT, BUYER_1, 8, 4, IAssetVault.LoteEstado.REDENCION_PARCIAL);
+        assetVault.burnForRedemption(BUYER_1, LOTE_ID_DEFAULT, 8);
+    }
+
+    // ---- Observability: burnForRedemption emits TokensRedimidos (→ AGOTADO) ----
+
+    function test_burnForRedemption_EmitsTokensRedimidos_AgotadoOnFinalBurn() public {
+        // _advanceToAlmacenado mints 20 tokens (10 kg) to BUYER_1, lote en ALMACENADO.
+        _advanceToAlmacenado();
+
+        // Primera redención parcial (8 tokens) → REDENCION_PARCIAL.
+        vm.prank(address(redemptionManager));
+        assetVault.burnForRedemption(BUYER_1, LOTE_ID_DEFAULT, 8);
+
+        // Quemar los 12 restantes = 6 kg (total 10 kg). totalSupply → 0 → AGOTADO.
+        vm.prank(address(redemptionManager));
+        vm.expectEmit(true, true, false, true);
+        emit IAssetVault.TokensRedimidos(LOTE_ID_DEFAULT, BUYER_1, 12, 10, IAssetVault.LoteEstado.AGOTADO);
+        assetVault.burnForRedemption(BUYER_1, LOTE_ID_DEFAULT, 12);
     }
 
     // ---- Branch 512: kgDisponibles returns 0 for non-existent lote ----

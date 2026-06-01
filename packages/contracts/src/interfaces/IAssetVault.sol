@@ -95,6 +95,21 @@ interface IAssetVault {
     );
     event EmergencyPaused(address indexed officer, uint64 timestamp);
     event EmergencyUnpaused(address indexed officer, uint64 timestamp);
+    /// @notice Emitido cuando se setea (one-time) el RedemptionManager autorizado para quemar tokens.
+    /// @param redemptionManager Dirección del RedemptionManager configurado.
+    event RedemptionManagerSet(address indexed redemptionManager);
+    /// @notice Emitido cuando el RedemptionManager quema tokens de un lote durante una redención.
+    /// @param loteId Identificador del lote redimido.
+    /// @param from Dirección titular cuyos tokens fueron quemados.
+    /// @param cantidad Cantidad de tokens quemados en esta redención.
+    /// @param kgRedimidosTotal Total acumulado de kg redimidos del lote tras esta operación.
+    /// @param nuevoEstado Estado del lote tras la redención (REDENCION_PARCIAL o AGOTADO).
+    event TokensRedimidos(
+        uint256 indexed loteId, address indexed from, uint256 cantidad, uint256 kgRedimidosTotal, LoteEstado nuevoEstado
+    );
+    /// @notice Emitido cuando un lote FALLIDO queda marcado como reembolso finalizado.
+    /// @param loteId Identificador del lote cuyo reembolso se dio por completado.
+    event ReembolsoFinalizado(uint256 indexed loteId);
 
     // ---- Mutating functions ----
     function crearLote(

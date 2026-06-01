@@ -166,6 +166,7 @@ contract AssetVault is
         if (newRedemptionManager == address(0)) revert ZeroAddress();
         if (redemptionManager != address(0)) revert RedemptionManagerAlreadySet();
         redemptionManager = newRedemptionManager;
+        emit RedemptionManagerSet(newRedemptionManager);
     }
 
     // ---- Mutating: ADMIN_ROLE ----
@@ -378,6 +379,7 @@ contract AssetVault is
         uint256 totalSupplyLote = totalSupply(loteId);
         if (totalSupplyLote == 0) {
             _reembolsado[loteId] = true;
+            emit ReembolsoFinalizado(loteId);
             return;
         }
 
@@ -430,6 +432,7 @@ contract AssetVault is
         if (lote.estado != LoteEstado.FALLIDO) revert LoteNotInFallido();
         if (_reembolsado[loteId]) revert ReembolsoYaEjecutado();
         _reembolsado[loteId] = true;
+        emit ReembolsoFinalizado(loteId);
     }
 
     // ---- Mutating: TREASURY_SRL_ROLE ----
@@ -486,6 +489,8 @@ contract AssetVault is
         if (totalSupply(loteId) == 0 && lote.estado == LoteEstado.REDENCION_PARCIAL) {
             lote.estado = LoteEstado.AGOTADO;
         }
+
+        emit TokensRedimidos(loteId, from, cantidad, lote.kgRedimidos, lote.estado);
     }
 
     // ---- Mutating: COMPLIANCE_OFFICER_ROLE ----
