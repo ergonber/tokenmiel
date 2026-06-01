@@ -14,14 +14,17 @@ import {IIdentityRegistry} from "./interfaces/IIdentityRegistry.sol";
 /// @title RedemptionManager
 /// @author Daniel Hidalgo Carrasco
 /// @notice Gestor del flujo de redencion fisica (almacenamiento → exportacion) con modelo de lock contable.
-/// @dev Workflow:
+/// @dev Workflow (ADR-017 — maquina de estados de 3 fases):
 ///      1. `iniciarRedencion()`: comprador (tier >= 2) registra la intencion de redimir tokens.
 ///         Los tokens NO se transfieren — se registra un lock logico en `_tokensLockedFor`.
 ///         El comprador no puede iniciar mas redenciones que cubran mas tokens de los que tiene.
 ///      2. (off-chain) SRL gestiona DUE + courier + BL/AWB.
-///      3. `confirmarExportacion()`: Oracle (Safe 2-de-3) quema los tokens del comprador
-///         directamente (via AssetVault.burnForRedemption) y registra DUE/BL-AWB.
-///      4. (alternativa) `cancelarRedencion()`: si falla aduana, libera el lock al comprador.
+///      3. `confirmarExportacion()`: Oracle (Safe 2-de-3) registra el DUE de SENASAG y transiciona
+///         INICIADA -> EN_EXPORTACION. NO quema tokens todavia — el lock sigue activo.
+///      4. `completarRedencion()`: Oracle (Safe 2-de-3) recibe el BL/AWB, libera el lock y QUEMA
+///         los tokens via AssetVault.burnForRedemption (EN_EXPORTACION -> COMPLETADA). Unico burn.
+///      5. (alternativa) `cancelarRedencion()`: desde INICIADA o EN_EXPORTACION libera el lock al
+///         comprador SIN quemar (ADR-015 habilita self-cancel del buyer tras REDENCION_TIMEOUT).
 /// @custom:security
 ///   - Modelo de lock contable (Option B): los tokens permanecen en el wallet del comprador
 ///     todo el tiempo. El lock es contable — registrado en `_tokensLockedFor[loteId][buyer]`.
@@ -276,8 +279,7 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         // No se usa para randomness ni precision timing. Mismo patron que IdentityRegistry
         // usa para KYC expiration. ADR-015 documenta el tradeoff.
         // slither-disable-next-line timestamp
-        bool isBuyerAfterTimeout =
-            (msg.sender == r.comprador && block.timestamp >= r.createdAt + REDENCION_TIMEOUT);
+        bool isBuyerAfterTimeout = (msg.sender == r.comprador && block.timestamp >= r.createdAt + REDENCION_TIMEOUT);
         if (!isOracle && !isCompliance && !isBuyerAfterTimeout) revert OnlyAuthorizedCanceler();
 
         // ---- Effects ----

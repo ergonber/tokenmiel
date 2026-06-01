@@ -736,9 +736,7 @@ contract RedemptionManagerTest is BaseTest {
     /// @dev RM-26: constructor revierte si complianceOfficer == address(0).
     function test_constructor_RevertWhen_ComplianceOfficerZero() public {
         vm.expectRevert(RedemptionManager.ZeroAddress.selector);
-        new RedemptionManager(
-            ADMIN, ORACLE_SAFE, address(0), COMPLIANCE_OFFICER_SUPLENTE, assetVault, identityRegistry
-        );
+        new RedemptionManager(ADMIN, ORACLE_SAFE, address(0), COMPLIANCE_OFFICER_SUPLENTE, assetVault, identityRegistry);
     }
 
     /// @dev RM-26: constructor revierte si complianceOfficerSuplente == address(0).

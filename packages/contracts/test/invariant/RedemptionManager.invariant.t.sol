@@ -16,8 +16,16 @@ contract RedemptionManagerHandler is BaseTest {
     address internal constant HANDLER_BUYER = address(0x9999);
     uint256 internal constant HANDLER_LOTE_ID = 1;
 
-    // Estado local del handler para tracking
-    uint256[] public redencionIds;
+    // ---- Tracking de redenciones: ring buffer ACOTADO (RM-29) ----
+    // Antes: `uint256[] public redencionIds;` con `push` ilimitado. A runs=50_000 / depth=100 el
+    // array crecia sin cota (cada iniciarRedencion exitosa pushea un id, y como cancelar/completar
+    // liberan el lock se pueden crear redenciones indefinidamente), lo que hacia OOM al motor de
+    // invariants. Ahora se usa un ring de capacidad fija: solo se retienen los ultimos RING_CAP ids;
+    // los viejos se sobreescriben. Leer un id reciclado es inocuo — las acciones filtran por
+    // estado != INICIADA y retornan temprano. El storage del handler queda acotado a RING_CAP slots.
+    uint256 internal constant RING_CAP = 256;
+    uint256[RING_CAP] internal _ring;
+    uint256 internal _ringWrites; // total de ids escritos (monotonico); validos = min(_ringWrites, RING_CAP)
 
     function setUp() public override {
         super.setUp();
@@ -26,6 +34,17 @@ contract RedemptionManagerHandler is BaseTest {
         _comprarTokens(HANDLER_BUYER, 2, 20);
         _confirmarCosechaDefault();
         _confirmarAlmacenamientoDefault();
+    }
+
+    /// @dev Cantidad de slots validos en el ring (acotada a RING_CAP).
+    function _ringLen() internal view returns (uint256) {
+        return _ringWrites < RING_CAP ? _ringWrites : RING_CAP;
+    }
+
+    /// @dev Registra un id en el ring buffer acotado (sobreescribe el mas viejo al dar la vuelta).
+    function _ringPush(uint256 rid) internal {
+        _ring[_ringWrites % RING_CAP] = rid;
+        _ringWrites++;
     }
 
     /// @dev Accion: iniciar redencion (sin roles, como cualquier buyer)
@@ -40,14 +59,14 @@ contract RedemptionManagerHandler is BaseTest {
 
         vm.prank(HANDLER_BUYER);
         uint256 rid = redemptionManager.iniciarRedencion(HANDLER_LOTE_ID, cantidad, datosHash);
-        redencionIds.push(rid);
+        _ringPush(rid);
     }
 
     /// @dev Accion: cancelar una redencion activa (como Oracle)
     function cancelarRedencionAction(uint256 idxSeed) external {
-        if (redencionIds.length == 0) return;
-        uint256 idx = idxSeed % redencionIds.length;
-        uint256 rid = redencionIds[idx];
+        uint256 len = _ringLen();
+        if (len == 0) return;
+        uint256 rid = _ring[idxSeed % len];
 
         IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(rid);
         if (r.estado != IRedemptionManager.EstadoRedencion.INICIADA) return;
@@ -58,9 +77,9 @@ contract RedemptionManagerHandler is BaseTest {
 
     /// @dev Accion: confirmar exportacion (como Oracle)
     function confirmarExportacionAction(uint256 idxSeed, uint256 hashSeed) external {
-        if (redencionIds.length == 0) return;
-        uint256 idx = idxSeed % redencionIds.length;
-        uint256 rid = redencionIds[idx];
+        uint256 len = _ringLen();
+        if (len == 0) return;
+        uint256 rid = _ring[idxSeed % len];
 
         IRedemptionManager.Redencion memory r = redemptionManager.getRedencion(rid);
         if (r.estado != IRedemptionManager.EstadoRedencion.INICIADA) return;
