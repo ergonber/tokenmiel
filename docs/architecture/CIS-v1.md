@@ -5,10 +5,10 @@
 
 | Campo | Valor |
 |---|---|
-| **Versión** | v1.1 (source-frozen) |
-| **Fecha** | _undefined_ (sin fecha de release asignada; el documento se versiona por contenido, no por sello temporal) |
-| **Revisión** | v1.1 (fecha _undefined_) — AssetVault ABI 23 → 26 eventos: GAP-1/2/3/4 resueltos pre-deploy por ADR-019 (eventos `RedemptionManagerSet`, `TokensRedimidos`, `ReembolsoFinalizado`). Secciones 2, 5.1, 8.1 y GAPS actualizadas. |
-| **Estado de deploy** | **NO deployado** en ninguna red. Deploy es el paso siguiente (decisión del usuario). |
+| **Versión** | v1.2 |
+| **Fecha** | 2026-06-01 |
+| **Revisión** | v1.2 (2026-06-01) — deployado a Plume testnet (chainid 98867); secciones 1 y 2 completadas con addresses reales + pin de runtime bytecode. · v1.1 — AssetVault ABI 23 → 26 eventos: GAP-1/2/3/4 resueltos pre-deploy por ADR-019 (`RedemptionManagerSet`, `TokensRedimidos`, `ReembolsoFinalizado`). |
+| **Estado de deploy** | **Deployado en Plume testnet** (chainid 98867) el 2026-06-01. Verificación en explorer y deploy a mainnet PENDIENTES. |
 | **Estado del código** | code-frozen, audit-ready interno. 100% branch/line/function coverage, Slither 0 findings accionables, fuzz 10k, invariant hasta 200k calls, 3 auditorías internas profundas, ADRs 001–019 (ADR-019 agregó 3 eventos de dominio a AssetVault pre-deploy). |
 | **Auditoría externa** | **PENDIENTE / NO iniciada** — ver `docs/security-reviews/PLAN-AUDITORIA-EXTERNA-MVP.md`. |
 | **Scope** | 3 contratos del MVP (`AssetVault`, `IdentityRegistry`, `RedemptionManager`) + 3 libraries (`ComplianceConstants`, `DocumentHashes`, `QualityRules`). |
@@ -23,17 +23,17 @@
 
 ## Sección 1 — Inventario de contratos y addresses
 
-Las tres son piezas del MVP. NINGUNA está deployada todavía; la columna de address va con marcador literal `[PENDIENTE DEPLOY]` para ambas redes.
+Las tres son piezas del MVP, **deployadas en Plume testnet (chainid 98867) el 2026-06-01**. La columna mainnet sigue `[PENDIENTE DEPLOY]`. Token de pago en testnet: `MockUSDC` en `0xf309e1eB2E3f4Cb169d6C9986A98C3e408C72Fb5` (mock de 6 decimales SIN mint expuesto — sirve para wirear y deployar; para flujos con fondos hace falta un mock minteable, ver sección 10).
 
 ### 1.1 AssetVault
 
 | Atributo | Valor |
 |---|---|
 | Naturaleza | ERC-1155 RWA token + escrow de USDC + registro de lotes (contrato principal del MVP). Hereda `ERC1155`, `ERC1155Supply`, `ERC1155Pausable`, `AccessControlDefaultAdminRules`, `ReentrancyGuard`, `IAssetVault`. |
-| Deployed | **NO** |
-| Verified (explorer) | **NO** |
+| Deployed | **SÍ** — Plume testnet (98867), 2026-06-01 |
+| Verified (explorer) | **NO** (pendiente; no se pasó API key en el deploy) |
 | Audit | Interno hecho (deep audit `audit-AssetVault-deep-2026-05-19.md`) + Slither 0 findings + 100% coverage. **Auditoría externa PENDIENTE.** |
-| Address Plume testnet | `[PENDIENTE DEPLOY]` |
+| Address Plume testnet | `0x1E39944BD26485F5946abae706Aa99D729886b47` |
 | Address Plume mainnet | `[PENDIENTE DEPLOY]` |
 
 ### 1.2 IdentityRegistry
@@ -41,10 +41,10 @@ Las tres son piezas del MVP. NINGUNA está deployada todavía; la columna de add
 | Atributo | Valor |
 |---|---|
 | Naturaleza | Allowlist / registro KYC on-chain. Fuente de verdad de KYC consumida por `AssetVault.canMint` y `RedemptionManager.canRedeem`. Sincronizado desde Sumsub off-chain vía `BACKEND_SIGNER_ROLE`. Hereda `AccessControlDefaultAdminRules`, `Pausable`, `IIdentityRegistry`. |
-| Deployed | **NO** |
-| Verified (explorer) | **NO** |
+| Deployed | **SÍ** — Plume testnet (98867), 2026-06-01 |
+| Verified (explorer) | **NO** (pendiente; no se pasó API key en el deploy) |
 | Audit | Interno hecho (`audit-IdentityRegistry-deep-2026-05-22.md`) + Slither 0 findings + 100% coverage. **Auditoría externa PENDIENTE.** |
-| Address Plume testnet | `[PENDIENTE DEPLOY]` |
+| Address Plume testnet | `0x8FBa3ae61B53516a32Ce443E2abb83Edcddfd6Cc` |
 | Address Plume mainnet | `[PENDIENTE DEPLOY]` |
 
 ### 1.3 RedemptionManager
@@ -52,10 +52,10 @@ Las tres son piezas del MVP. NINGUNA está deployada todavía; la columna de add
 | Atributo | Valor |
 |---|---|
 | Naturaleza | Redención física en 2 fases (export). Option B "Lock Accumulator": los tokens NUNCA salen del wallet hasta el burn final. Hereda `AccessControlDefaultAdminRules`, `ReentrancyGuard`, `Pausable`, `IRedemptionManager`. NO mueve USDC. |
-| Deployed | **NO** |
-| Verified (explorer) | **NO** |
+| Deployed | **SÍ** — Plume testnet (98867), 2026-06-01 |
+| Verified (explorer) | **NO** (pendiente; no se pasó API key en el deploy) |
 | Audit | Interno hecho (`audit-RedemptionManager-deep-2026-05-26.md`) + Slither 0 findings + 100% coverage. **Auditoría externa PENDIENTE.** |
-| Address Plume testnet | `[PENDIENTE DEPLOY]` |
+| Address Plume testnet | `0xd6EA5406D7579C1bc5ea935d5ED46675Edf8d062` |
 | Address Plume mainnet | `[PENDIENTE DEPLOY]` |
 
 ### 1.4 Libraries (no se deployan por separado)
@@ -68,15 +68,15 @@ Las tres son piezas del MVP. NINGUNA está deployada todavía; la columna de add
 
 Los ABIs ya fueron capturados de la compilación (`forge inspect <Contract> abi --json`, exit 0, JSON válido). El backend consume estos archivos directamente.
 
-| Contrato | ABI path | fn count | event count | Pin a bytecode deployado |
+| Contrato | ABI path | fn count | event count | Pin: deployed runtime bytecode sha256 (Plume testnet 98867) |
 |---|---|---|---|---|
-| AssetVault | `packages/abis/AssetVault.abi.json` | 54 | 26 | `[PENDIENTE DEPLOY]` |
-| IdentityRegistry | `packages/abis/IdentityRegistry.abi.json` | 38 | 17 | `[PENDIENTE DEPLOY]` |
-| RedemptionManager | `packages/abis/RedemptionManager.abi.json` | 36 | 15 | `[PENDIENTE DEPLOY]` |
+| AssetVault | `packages/abis/AssetVault.abi.json` | 54 | 26 | `81743037a5953e315535c524593adcdeb93257749a1d60917dc89ef6c37da6fe` |
+| IdentityRegistry | `packages/abis/IdentityRegistry.abi.json` | 38 | 17 | `b1cea3c19754a405b453242d8931671423ed12e45b6478e80fc7bd7e3a9dbdf0` |
+| RedemptionManager | `packages/abis/RedemptionManager.abi.json` | 36 | 15 | `2eb49f6c939eff643e2ab67b9aa0b5e25a593fb010e4990e02f04414c8fa4d76` |
 
-**Nota de pin:** el `creation-bytecode sha256` capturado en compilación es **provisional** (referencia, no canónico). El bytecode canónico que el backend debe pinear es el **deployed runtime bytecode** capturado en el deploy real + verificación en el explorer. Hasta entonces: `[PENDIENTE DEPLOY]`.
+**Nota de pin:** el pin canónico es el **deployed runtime bytecode sha256** de arriba (`cast code <addr> | shasum -a 256`, Plume testnet 98867, 2026-06-01). El ABI es idéntico entre redes; al deployar a mainnet se recalcula el pin para esas addresses. **Verificación en el explorer: PENDIENTE** (no se pasó API key en el deploy) — al verificar, el explorer expone el ABI públicamente y se flipa `Verified=SÍ` en la sección 1.
 
-Referencia provisional de creation-bytecode (NO usar como pin de producción):
+Referencia de creation-bytecode (compilación, NO usar como pin):
 - AssetVault: `a3f19941b61ecb3e78a8ebb02fae6dd30d5836d173f77367033999d94463fa94`
 - IdentityRegistry: `df651d0dc358214b686b56c185a76dcc3952000c9d3cff0574b352ca490f9a58`
 - RedemptionManager: `10e73ae29ed6d081382a7997776fbc382e03bba4ac02f3c2d3203bb35f517882`
