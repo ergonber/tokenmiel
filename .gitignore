@@ -30,6 +30,14 @@ pnpm-debug.log*
 .env.*.local
 .env.production
 .env.development
+.env.testnet
+.env.testnet.*
+.env.deploy
+.env.deploy.*
+
+# Testnet/deploy throwaway keys & Foundry keystores (NEVER COMMIT)
+keystore/
+*.keystore.json
 
 # IDE
 .vscode/*
