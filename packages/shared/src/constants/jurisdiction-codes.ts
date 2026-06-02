@@ -72,82 +72,80 @@ export const JURISDICTION_CODES: readonly JurisdictionEntry[] = [
   // -------------------------------------------------------------------------
   // LATAM — Bolivia (primary market) + core regional countries
   // -------------------------------------------------------------------------
-  { code: 'BO', name: 'Bolivia',          region: 'LATAM' },
-  { code: 'AR', name: 'Argentina',        region: 'LATAM' },
-  { code: 'BR', name: 'Brazil',           region: 'LATAM' },
-  { code: 'CL', name: 'Chile',            region: 'LATAM' },
-  { code: 'PE', name: 'Peru',             region: 'LATAM' },
-  { code: 'CO', name: 'Colombia',         region: 'LATAM' },
-  { code: 'EC', name: 'Ecuador',          region: 'LATAM' },
-  { code: 'UY', name: 'Uruguay',          region: 'LATAM' },
-  { code: 'PY', name: 'Paraguay',         region: 'LATAM' },
-  { code: 'MX', name: 'Mexico',           region: 'LATAM' },
-  { code: 'CR', name: 'Costa Rica',       region: 'LATAM' },
-  { code: 'PA', name: 'Panama',           region: 'LATAM' },
+  { code: 'BO', name: 'Bolivia', region: 'LATAM' },
+  { code: 'AR', name: 'Argentina', region: 'LATAM' },
+  { code: 'BR', name: 'Brazil', region: 'LATAM' },
+  { code: 'CL', name: 'Chile', region: 'LATAM' },
+  { code: 'PE', name: 'Peru', region: 'LATAM' },
+  { code: 'CO', name: 'Colombia', region: 'LATAM' },
+  { code: 'EC', name: 'Ecuador', region: 'LATAM' },
+  { code: 'UY', name: 'Uruguay', region: 'LATAM' },
+  { code: 'PY', name: 'Paraguay', region: 'LATAM' },
+  { code: 'MX', name: 'Mexico', region: 'LATAM' },
+  { code: 'CR', name: 'Costa Rica', region: 'LATAM' },
+  { code: 'PA', name: 'Panama', region: 'LATAM' },
   { code: 'DO', name: 'Dominican Republic', region: 'LATAM' },
 
   // -------------------------------------------------------------------------
   // EU — target export markets for premium honey (MiCA + AMLD6 compliant)
   // -------------------------------------------------------------------------
-  { code: 'DE', name: 'Germany',          region: 'EU' },
-  { code: 'ES', name: 'Spain',            region: 'EU' },
-  { code: 'IT', name: 'Italy',            region: 'EU' },
-  { code: 'FR', name: 'France',           region: 'EU' },
-  { code: 'NL', name: 'Netherlands',      region: 'EU' },
-  { code: 'BE', name: 'Belgium',          region: 'EU' },
-  { code: 'AT', name: 'Austria',          region: 'EU' },
-  { code: 'PT', name: 'Portugal',         region: 'EU' },
-  { code: 'SE', name: 'Sweden',           region: 'EU' },
-  { code: 'DK', name: 'Denmark',          region: 'EU' },
-  { code: 'FI', name: 'Finland',          region: 'EU' },
-  { code: 'PL', name: 'Poland',           region: 'EU' },
-  { code: 'CZ', name: 'Czech Republic',   region: 'EU' },
-  { code: 'HU', name: 'Hungary',          region: 'EU' },
-  { code: 'RO', name: 'Romania',          region: 'EU' },
-  { code: 'GR', name: 'Greece',           region: 'EU' },
-  { code: 'IE', name: 'Ireland',          region: 'EU' },
-  { code: 'LU', name: 'Luxembourg',       region: 'EU' },
+  { code: 'DE', name: 'Germany', region: 'EU' },
+  { code: 'ES', name: 'Spain', region: 'EU' },
+  { code: 'IT', name: 'Italy', region: 'EU' },
+  { code: 'FR', name: 'France', region: 'EU' },
+  { code: 'NL', name: 'Netherlands', region: 'EU' },
+  { code: 'BE', name: 'Belgium', region: 'EU' },
+  { code: 'AT', name: 'Austria', region: 'EU' },
+  { code: 'PT', name: 'Portugal', region: 'EU' },
+  { code: 'SE', name: 'Sweden', region: 'EU' },
+  { code: 'DK', name: 'Denmark', region: 'EU' },
+  { code: 'FI', name: 'Finland', region: 'EU' },
+  { code: 'PL', name: 'Poland', region: 'EU' },
+  { code: 'CZ', name: 'Czech Republic', region: 'EU' },
+  { code: 'HU', name: 'Hungary', region: 'EU' },
+  { code: 'RO', name: 'Romania', region: 'EU' },
+  { code: 'GR', name: 'Greece', region: 'EU' },
+  { code: 'IE', name: 'Ireland', region: 'EU' },
+  { code: 'LU', name: 'Luxembourg', region: 'EU' },
 
   // -------------------------------------------------------------------------
   // Non-EU Europe — financial hubs and key markets
   // -------------------------------------------------------------------------
-  { code: 'GB', name: 'United Kingdom',   region: 'EU' },
-  { code: 'CH', name: 'Switzerland',      region: 'OTHER' },
-  { code: 'NO', name: 'Norway',           region: 'EU' },
-  { code: 'IS', name: 'Iceland',          region: 'EU' },
-  { code: 'LI', name: 'Liechtenstein',    region: 'EU' },
+  { code: 'GB', name: 'United Kingdom', region: 'EU' },
+  { code: 'CH', name: 'Switzerland', region: 'OTHER' },
+  { code: 'NO', name: 'Norway', region: 'EU' },
+  { code: 'IS', name: 'Iceland', region: 'EU' },
+  { code: 'LI', name: 'Liechtenstein', region: 'EU' },
 
   // -------------------------------------------------------------------------
   // NA — United States and Canada
   // -------------------------------------------------------------------------
-  { code: 'US', name: 'United States',    region: 'NA' },
-  { code: 'CA', name: 'Canada',           region: 'NA' },
+  { code: 'US', name: 'United States', region: 'NA' },
+  { code: 'CA', name: 'Canada', region: 'NA' },
 
   // -------------------------------------------------------------------------
   // APAC — premium honey importers
   // -------------------------------------------------------------------------
-  { code: 'JP', name: 'Japan',            region: 'APAC' },
-  { code: 'KR', name: 'South Korea',      region: 'APAC' },
-  { code: 'AU', name: 'Australia',        region: 'APAC' },
-  { code: 'NZ', name: 'New Zealand',      region: 'APAC' },
-  { code: 'SG', name: 'Singapore',        region: 'APAC' },
-  { code: 'HK', name: 'Hong Kong',        region: 'APAC' },
+  { code: 'JP', name: 'Japan', region: 'APAC' },
+  { code: 'KR', name: 'South Korea', region: 'APAC' },
+  { code: 'AU', name: 'Australia', region: 'APAC' },
+  { code: 'NZ', name: 'New Zealand', region: 'APAC' },
+  { code: 'SG', name: 'Singapore', region: 'APAC' },
+  { code: 'HK', name: 'Hong Kong', region: 'APAC' },
 
   // -------------------------------------------------------------------------
   // OTHER — Middle East and additional financial hubs
   // -------------------------------------------------------------------------
   { code: 'AE', name: 'United Arab Emirates', region: 'OTHER' },
-  { code: 'IL', name: 'Israel',           region: 'OTHER' },
-  { code: 'ZA', name: 'South Africa',     region: 'OTHER' },
+  { code: 'IL', name: 'Israel', region: 'OTHER' },
+  { code: 'ZA', name: 'South Africa', region: 'OTHER' },
 ] as const;
 
 // ---------------------------------------------------------------------------
 // Derived lookup set (O(1) lookup at runtime)
 // ---------------------------------------------------------------------------
 
-const _jurisdictionCodeSet: ReadonlySet<string> = new Set(
-  JURISDICTION_CODES.map((j) => j.code)
-);
+const _jurisdictionCodeSet: ReadonlySet<string> = new Set(JURISDICTION_CODES.map((j) => j.code));
 
 // ---------------------------------------------------------------------------
 // Validation helpers

@@ -70,11 +70,11 @@ Los ABIs ya fueron capturados de la compilación (`forge inspect <Contract> abi 
 
 | Contrato | ABI path | fn count | event count | Pin: deployed runtime bytecode sha256 (Plume testnet 98867) |
 |---|---|---|---|---|
-| AssetVault | `packages/abis/AssetVault.abi.json` | 54 | 26 | `81743037a5953e315535c524593adcdeb93257749a1d60917dc89ef6c37da6fe` |
-| IdentityRegistry | `packages/abis/IdentityRegistry.abi.json` | 38 | 17 | `b1cea3c19754a405b453242d8931671423ed12e45b6478e80fc7bd7e3a9dbdf0` |
-| RedemptionManager | `packages/abis/RedemptionManager.abi.json` | 36 | 15 | `2eb49f6c939eff643e2ab67b9aa0b5e25a593fb010e4990e02f04414c8fa4d76` |
+| AssetVault | `packages/abis/AssetVault.abi.json` | 54 | 26 | `c5b6add720910144ae7c3cc4e69c184e08b719695cc22fea4f978d6a6401ca58` |
+| IdentityRegistry | `packages/abis/IdentityRegistry.abi.json` | 38 | 17 | `5e406ef468ebce45c221d550dbd52fac16ef422ef93b7180ecf041367e092780` |
+| RedemptionManager | `packages/abis/RedemptionManager.abi.json` | 36 | 15 | `13ae89956e466db0dc8a3e2c0275b322a4d5c76f1e109bed413877e6ab910e58` |
 
-**Nota de pin:** el pin canónico es el **deployed runtime bytecode sha256** de arriba (`cast code <addr> | shasum -a 256`, Plume testnet 98867, 2026-06-01). El ABI es idéntico entre redes; al deployar a mainnet se recalcula el pin para esas addresses. **Verificación en el explorer: PENDIENTE** (no se pasó API key en el deploy) — al verificar, el explorer expone el ABI públicamente y se flipa `Verified=SÍ` en la sección 1.
+**Nota de pin (canonicalización):** el pin es `sha256(getCode())` — el runtime bytecode hex (`0x`-prefijado, lowercase, **SIN** newline final) tal cual lo devuelve `eth_getCode`. Reproducible con `cast code <addr> | tr -d '\n' | shasum -a 256` (el `tr -d` importa: sin él, el newline del CLI cambia el hash) o con el `ChainBootstrap` del backend (`packages/chain` `DEPLOYMENTS` + `apps/api` bootstrap, que aborta fail-fast ante mismatch). Verificado live contra Plume testnet 98867 el 2026-06-02. El ABI es idéntico entre redes; al deployar a mainnet se recalcula el pin. **Verificación en el explorer: PENDIENTE** (no se pasó API key en el deploy) → al verificar se flipa `Verified=SÍ` en la sección 1.
 
 Referencia de creation-bytecode (compilación, NO usar como pin):
 - AssetVault: `a3f19941b61ecb3e78a8ebb02fae6dd30d5836d173f77367033999d94463fa94`

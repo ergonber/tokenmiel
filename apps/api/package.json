@@ -1,0 +1,33 @@
+{
+  "name": "@tokenization/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "build": "bun build src/server.ts --outdir dist --target bun",
+    "start": "bun dist/server.js",
+    "test": "vitest run --passWithNoTests",
+    "type-check": "tsc --noEmit",
+    "lint": "biome check ./src"
+  },
+  "dependencies": {
+    "hono": "^4.0.0",
+    "zod": "^3.23.0",
+    "pino": "^9.0.0",
+    "viem": "^2.0.0",
+    "@tokenization/abis": "workspace:*",
+    "@tokenization/chain": "workspace:*",
+    "@tokenization/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "@biomejs/biome": "^1.9.0",
+    "@types/bun": "latest",
+    "pino-pretty": "^11.0.0"
+  }
+}

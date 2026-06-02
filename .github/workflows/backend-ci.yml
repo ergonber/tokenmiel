@@ -1,0 +1,97 @@
+name: Backend CI
+
+# Runs on every push and pull request that touches the backend packages
+# (apps/api, packages/{abis,chain,db,shared,config}) or this workflow file.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "apps/api/**"
+      - "packages/abis/**"
+      - "packages/chain/**"
+      - "packages/db/**"
+      - "packages/shared/**"
+      - "packages/config/**"
+      - "vitest.workspace.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "turbo.json"
+      - "tsconfig.json"
+      - "biome.json"
+      - ".bun-version"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+    paths:
+      - "apps/api/**"
+      - "packages/abis/**"
+      - "packages/chain/**"
+      - "packages/db/**"
+      - "packages/shared/**"
+      - "packages/config/**"
+      - "vitest.workspace.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "turbo.json"
+      - "tsconfig.json"
+      - "biome.json"
+      - ".bun-version"
+      - ".github/workflows/backend-ci.yml"
+
+# Least-privilege: this pipeline only needs to read the repo.
+permissions:
+  contents: read
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  type-check-lint-test:
+    name: Type-check · Lint · Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No `version:` here — pnpm/action-setup@v4 reads it from package.json
+      # `packageManager: pnpm@9.0.0`; passing both errors with ERR_PNPM_BAD_PM_VERSION.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Node version (for pnpm / Turbo)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Scope to the @tokenization/* workspaces only — NEVER run @miel/contracts
+      # here (its `test` script is forge fuzz at 10k runs and OOMs the runner;
+      # contracts have their own pipeline in contracts-ci.yml).
+      - name: Type-check (backend only)
+        run: pnpm exec turbo run type-check --filter='@tokenization/*'
+
+      - name: Lint (backend only)
+        run: pnpm exec turbo run lint --filter='@tokenization/*'
+
+      - name: Test (backend only)
+        run: pnpm exec turbo run test --filter='@tokenization/*'
+
+      # Regenerate the ABI bindings and fail if the committed *.gen.ts drifted
+      # (catches edits the integrity "contains JSON" test can't, e.g. the wrapper).
+      - name: ABI bindings up to date (no drift)
+        run: |
+          pnpm --filter @tokenization/abis generate
+          git diff --exit-code -- packages/abis/src/generated
+
+      # Smoke the Bun production build path (dev/build/start use Bun, not exercised above).
+      - name: Build smoke (Bun)
+        run: pnpm --filter @tokenization/api build
