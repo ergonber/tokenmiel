@@ -142,10 +142,12 @@ jobs:
         run: pipx install slither-analyzer==0.11.5
 
       - name: Run Slither
-        # Same filter as the local review. Fails the job on any high- or
-        # medium-severity finding (the contracts are at 0 findings today).
+        # Same filter as the local review. `--fail-medium` already fails the job
+        # on medium- AND high-severity findings, and it is mutually exclusive with
+        # `--fail-high` (passing both makes slither exit 2 at argument parsing, so
+        # the job never analyzes). Keep only `--fail-medium`. The contracts are at
+        # 0 such findings today.
         run: |
           slither . \
             --filter-paths "lib|test|phase2|script" \
-            --fail-high \
             --fail-medium
