@@ -82,6 +82,8 @@ contract IdentityRegistry is AccessControlDefaultAdminRules, Pausable, IIdentity
         // "nunca verificado" (default storage) de "fue verificado y revocado".
         if (tier == 0) revert TierZeroNotAllowed();
         if (tier > ComplianceConstants.MAX_KYC_TIER) revert InvalidTier();
+        // KYC expiry spans days/months; ±15s validator timestamp drift is negligible.
+        // slither-disable-next-line timestamp
         if (expiresAt <= block.timestamp) revert ExpiryInPast();
 
         KYCData storage data = _kyc[user];
@@ -233,12 +235,14 @@ contract IdentityRegistry is AccessControlDefaultAdminRules, Pausable, IIdentity
 
     /// @inheritdoc IIdentityRegistry
     function isExpired(address user) external view returns (bool) {
+        // slither-disable-next-line timestamp
         return _kyc[user].expiresAt <= block.timestamp;
     }
 
     /// @inheritdoc IIdentityRegistry
     function canMint(address user) external view returns (bool) {
         KYCData storage data = _kyc[user];
+        // slither-disable-next-line timestamp
         return data.tier >= ComplianceConstants.MIN_KYC_TIER_PARA_COMPRAR && !data.sanctioned && !data.frozen
             && data.expiresAt > block.timestamp;
     }
@@ -246,6 +250,7 @@ contract IdentityRegistry is AccessControlDefaultAdminRules, Pausable, IIdentity
     /// @inheritdoc IIdentityRegistry
     function canRedeem(address user) external view returns (bool) {
         KYCData storage data = _kyc[user];
+        // slither-disable-next-line timestamp
         return data.tier >= ComplianceConstants.MIN_KYC_TIER_PARA_REDIMIR && !data.sanctioned && !data.frozen
             && data.expiresAt > block.timestamp;
     }

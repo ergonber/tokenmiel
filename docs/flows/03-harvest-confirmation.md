@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-After the honey has been physically harvested, the operating company (SRL) collects the required documentation (SENASAG phytosanitary certificate, lab analysis, harvest minutes, apiary photos, origin certificate), uploads them, and the backend prepares an on-chain transaction for the Oracle Safe (2-of-3). Two of three signers must approve with their hardware wallets. Upon confirmation, the lot transitions from `PREVENTA` to `COSECHADO`, unlocking the technical reserve release to the producer and enabling the next phase (quality attestation).
+After the honey has been physically harvested, the operating company (SRL) collects the required documentation (SENASAG phytosanitary certificate, lab analysis, harvest minutes, apiary photos, origin certificate), uploads them, and the backend prepares an on-chain transaction for the Oracle Safe (2-of-3). Two of three signers must approve with their hardware wallets. Upon confirmation, the lot transitions from `PREVENTA` to `COSECHADO`, **the net escrow amount (`montoNetoPendiente`) is immediately released to the producer SRL**, and the technical reserve remains locked in the vault until `liberarReservaTecnica()` is called separately by TREASURY_SRL_ROLE.
 
 This is a high-trust operation: the lot's physical existence and certificate authenticity are legally attested by the SRL and the Bolivian SENASAG authority.
 
@@ -14,7 +14,7 @@ This is a high-trust operation: the lot's physical existence and certificate aut
 - **🤖 Backend** — Prepares the Safe transaction proposal. Computes document hashes. Uploads to Arweave.
 - **🔐 Oracle Safe** — Gnosis Safe 2-of-3 at `ORACLE_SAFE_ADDR`. Holds `ORACLE_ROLE` on `AssetVault`. Two of three hardware-wallet signers must approve.
 - **📜 AssetVault** — Executes `confirmarCosecha()`.
-- **🏢 Producer SRL** — Honey producer. Receives the USDC net amount from the technical reserve upon harvest confirmation. (Handled off-chain: Safe TREASURY_SRL_ROLE triggers a direct wallet transfer.)
+- **🏢 Producer SRL** — Honey producer. Receives the USDC **net amount (`montoNetoPendiente`) directly inside `confirmarCosecha()`** (FIX H-01 escrow release). The technical reserve is held separately and released later via `liberarReservaTecnica()` (TREASURY_SRL_ROLE).
 
 ---
 
@@ -80,7 +80,7 @@ This is a high-trust operation: the lot's physical existence and certificate aut
                                                 hashActaCosecha=0xCCC..., hashFotosApiario=0xDDD...,
                                                 hashCertificadoOrigen=0xEEE...,
                                                 tipoCertificado=TipoCertificado.DO)
-                              [ORACLE_ROLE, nonReentrant]
+                              [ORACLE_ROLE, nonReentrant — NO whenNotPaused: oracle ops proceed during pause]
 
 📜 AV       --> 📜 AV       : validate lote exists (productorSRL != 0x0) ✓
 📜 AV       --> 📜 AV       : validate lote.estado == PREVENTA ✓
@@ -96,35 +96,34 @@ This is a high-trust operation: the lot's physical existence and certificate aut
 📜 AV       --> 📜 AV       : lote.tipoCertificadoOrigen = DO  [EFFECT]
 📜 AV       --> 📜 AV       : lote.estado = COSECHADO  [EFFECT: PREVENTA → COSECHADO]
 
+📜 AV       --> 📜 AV       : montoLiberar = lote.montoNetoPendiente  [FIX H-01]
+📜 AV       --> 📜 AV       : lote.montoNetoPendiente = 0  [EFFECT]
+📜 AV       --> 💰 USDC     : safeTransfer(lote.productorSRL, montoLiberar)  [NET AMOUNT RELEASED]
+
 📜 AV       ~~> 🚨 Event    : CosechaConfirmada(loteId=7, kgRealCosechado=95000,
                                 hashSenasag=0xAAA..., hashAnalisisLab=0xBBB...,
                                 hashActaCosecha=0xCCC..., hashCertificadoOrigen=0xEEE...)
+📜 AV       ~~> 🚨 Event    : MontoNetoLiberado(loteId=7, montoNetoPendiente, lote.productorSRL)
 
 🤖 Backend  <-- 🔐 OracleSafe : tx confirmed, txHash=0xFFF...
 
---- Reserve release (off-chain, triggered by on-chain event) ---
+--- Technical reserve release (separate call, after confirmarCosecha) ---
 
 🤖 Backend  --> 🤖 Backend  : Goldsky event listener detects CosechaConfirmada(loteId=7)
 🤖 Backend  --> 📜 AV       : reservaTecnicaActual(7)  [view] → returns current reserve amount
 
-NOTE: The reserve release (transfer of USDC from reserve to producer SRL) is
-      executed OFF-CHAIN by the Treasury SRL wallet. The on-chain call
-      AssetVault.liberarReservaTecnica() transfers USDC from the vault to
-      lote.productorSRL. This must be triggered by TREASURY_SRL_ROLE.
+NOTE: The NET AMOUNT is released automatically INSIDE confirmarCosecha() (FIX H-01).
+      The TECHNICAL RESERVE is a separate amount that remains locked in the vault.
+      Its release requires an explicit call to liberarReservaTecnica() by TREASURY_SRL_ROLE,
+      and is permitted from COSECHADO state onward (no QUALITY_ATTESTED required — FASE 2).
 
 🔐 TreasurySRL --> 📜 AV    : liberarReservaTecnica(loteId=7)  [TREASURY_SRL_ROLE, nonReentrant]
-📜 AV          --> 📜 AV    : validate lote.estado == QUALITY_ATTESTED or ALMACENADO or
-                               REDENCION_PARCIAL or AGOTADO  ← NOTE: estado is COSECHADO here.
-
-CONFLICT: The contract requires estado >= QUALITY_ATTESTED to call liberarReservaTecnica.
-          But arquitectura.md section 23.3 says the reserve is released upon confirmarCosecha.
-          Current code: liberarReservaTecnica() checks for QUALITY_ATTESTED/ALMACENADO/REDENCION_PARCIAL/AGOTADO.
-          This means the reserve CANNOT be released at COSECHADO state.
-          The release must wait until after confirmarCalidad() transitions to QUALITY_ATTESTED.
-          
-          CONFLICT: see docs/architecture/CONTRACT-SPECS.md §10 CONFLICT 1 and docs/architecture/ARQUITECTURA-TECNICA-MVP.md §23.3.
+📜 AV          --> 📜 AV    : validate lote.estado ∈ {COSECHADO, ALMACENADO,
+                               REDENCION_PARCIAL, AGOTADO}  ✓  (COSECHADO is valid)
 
 📜 AV       ~~> 🚨 Event    : ReservaTecnicaLiberada(loteId=7, montoUSDC=XXX, productorSRL=0x...)
+
+RESOLVED: liberarReservaTecnica() is permitted from COSECHADO — no QUALITY_ATTESTED required.
 ```
 
 ---
@@ -164,7 +163,8 @@ CONFLICT: The contract requires estado >= QUALITY_ATTESTED to call liberarReserv
 ### Step 4 — `confirmarCosecha()` on-chain
 
 - **Actor:** Oracle Safe (ORACLE_ROLE)
-- **Function called:** `AssetVault.confirmarCosecha(loteId, kgRealCosechado, hashSenasag, hashAnalisisLab, hashActaCosecha, hashFotosApiario, hashCertificadoOrigen, tipoCertificado)`
+- **Modifiers:** `onlyRole(ORACLE_ROLE)`, `nonReentrant` — **NO `whenNotPaused`**: oracle operations proceed even when the contract is paused.
+- **Full signature:** `confirmarCosecha(uint256 loteId, uint256 kgRealCosechado, bytes32 hashSenasag, bytes32 hashAnalisisLab, bytes32 hashActaCosecha, bytes32 hashFotosApiario, bytes32 hashCertificadoOrigen, TipoCertificadoOrigen tipoCertificado)`
 - **Validations:**
   1. `lote.productorSRL != address(0)` — lot exists
   2. `lote.estado == PREVENTA` — correct state
@@ -175,12 +175,19 @@ CONFLICT: The contract requires estado >= QUALITY_ATTESTED to call liberarReserv
   - Five hash fields set
   - `lote.tipoCertificadoOrigen = tipoCertificado`
   - `lote.estado = COSECHADO`
-- **Events emitted:** `CosechaConfirmada(loteId, kgRealCosechado, hashSenasag, hashAnalisisLab, hashActaCosecha, hashCertificadoOrigen)`
+  - `lote.montoNetoPendiente = 0` + `usdc.safeTransfer(lote.productorSRL, montoNetoPendiente)` **(FIX H-01 — net escrow released inside this call)**
+- **Events emitted:**
+  - `CosechaConfirmada(loteId, kgRealCosechado, hashSenasag, hashAnalisisLab, hashActaCosecha, hashCertificadoOrigen)` — always
+  - `MontoNetoLiberado(loteId, montoLiberar, lote.productorSRL)` — only when `montoNetoPendiente > 0`
 - **Gas estimated:** ~180k
 
-### Step 5 — Reserve Release (post-QUALITY_ATTESTED)
+### Step 5 — Technical Reserve Release (separate call, from COSECHADO onward)
 
-See `04-quality-attestation.md`. The technical reserve can only be released after the lot reaches `QUALITY_ATTESTED` state, not at `COSECHADO`. This is a CONFLICT between the architecture document and the current code implementation.
+- **Actor:** TREASURY_SRL_ROLE wallet
+- **Function called:** `AssetVault.liberarReservaTecnica(loteId)` — `[TREASURY_SRL_ROLE, nonReentrant]`
+- **Allowed states:** `COSECHADO`, `ALMACENADO`, `REDENCION_PARCIAL`, `AGOTADO` — **NOT** `PREVENTA` or `FALLIDO`.
+- **Note:** This call can happen immediately after `confirmarCosecha()` transitions the lot to `COSECHADO`. No intermediate QUALITY_ATTESTED state is required (that intermediate state was removed from MVP — FASE 2 only).
+- **Event emitted:** `ReservaTecnicaLiberada(loteId, montoUSDC, productorSRL)`
 
 ---
 
@@ -189,9 +196,12 @@ See `04-quality-attestation.md`. The technical reserve can only be released afte
 - Lot `#7` in `AssetVault` has `estado == COSECHADO`.
 - Five document hashes stored on-chain (verifiable by anyone).
 - `lote.kgCosechadosReal` recorded (may differ from `kgEsperados`).
+- `lote.montoNetoPendiente == 0` — net escrow amount already transferred to `lote.productorSRL` (FIX H-01).
+- `MontoNetoLiberado` event emitted (if `montoNetoPendiente` was > 0).
 - Arweave permanent links stored in backend database with Goldsky-indexed on-chain reference.
-- Goldsky subgraph indexes the `CosechaConfirmada` event.
+- Goldsky subgraph indexes the `CosechaConfirmada` and `MontoNetoLiberado` events.
 - Buyers can query the lot and see the harvest documentation hashes.
+- `liberarReservaTecnica()` is now callable by TREASURY_SRL_ROLE (lot is in COSECHADO).
 
 ---
 
@@ -200,23 +210,27 @@ See `04-quality-attestation.md`. The technical reserve can only be released afte
 | Cause | Result | Reverts with |
 |-------|--------|-------------|
 | Lot not in PREVENTA | state check fails | `LoteNotInPreventa()` |
+| Lot does not exist | existence check fails | `LoteNotExists()` |
 | Any hash is zero | validation fails | `InvalidHash()` |
 | `kgRealCosechado == 0` | validation fails | `InvalidKgEsperados()` |
 | Caller lacks ORACLE_ROLE | unauthorized | AccessControl revert |
-| Contract paused | blocked | `EnforcedPause()` |
+| Contract paused | **not blocked** — `confirmarCosecha` has no `whenNotPaused` | — |
 | Arweave readback mismatch | backend aborts before Safe proposal | no blockchain action |
 
 ---
 
 ## Known Issues and Conflicts
 
-**CONFLICT: Reserve release timing**
+**RESOLVED — Reserve release timing (was: CONFLICT)**
 
-`docs/architecture/ARQUITECTURA-TECNICA-MVP.md §23.3` step 14-15 describes the reserve release happening right after `confirmarCosecha`. However, `AssetVault.liberarReservaTecnica()` (line 430-434) requires `estado` to be `QUALITY_ATTESTED`, `ALMACENADO`, `REDENCION_PARCIAL`, or `AGOTADO` — NOT `COSECHADO`.
+`liberarReservaTecnica()` is permitted from **COSECHADO** state onward (code line 447:
+`lote.estado != LoteEstado.COSECHADO && lote.estado != LoteEstado.ALMACENADO ...`).
+No intermediate `QUALITY_ATTESTED` state is required — that state was removed from the MVP
+(FASE 2 only, via `LabRegistry` standalone). This is consistent with the architecture intent.
 
-This means the reserve is NOT released at harvest confirmation but at quality attestation. The architecture document and the code disagree.
-
-Resolution: the reserve is released after `confirmarCalidad()` (see `04-quality-attestation.md`), not at `confirmarCosecha`. This is actually safer — the producer receives full payment only after quality is confirmed, not just after physical harvest. The architecture document should be updated to reflect this.
+Additionally, the **net escrow amount** (`montoNetoPendiente`) is released automatically
+**inside `confirmarCosecha()`** (FIX H-01), separate from the technical reserve.
+Two distinct payments, two distinct calls — no conflict.
 
 **M-02 — No shortfall protection in `confirmarCosecha`**
 
@@ -243,9 +257,14 @@ Documents submitted:
   tipoCertificado:     TipoCertificadoOrigen.DO
 
 Post-tx state:
-  lote.estado:           COSECHADO  (was PREVENTA)
-  lote.kgCosechadosReal: 95000      (stored as gramos: 95 * 1000)
+  lote.estado:              COSECHADO  (was PREVENTA)
+  lote.kgCosechadosReal:    95000      (stored as gramos: 95 * 1000)
+  lote.montoNetoPendiente:  0          (net amount transferred to productorSRL — FIX H-01)
   All five hashes stored on-chain.
+  MontoNetoLiberado event emitted (if montoNetoPendiente > 0).
+
+  Technical reserve: still held in vault. TREASURY_SRL_ROLE can call
+  liberarReservaTecnica(7) immediately (COSECHADO is a valid state).
 
 Gas paid by:   Oracle Safe (Plume native gas)
 Gas estimated: 180k ≈ USD 0.09
@@ -255,4 +274,4 @@ state? NO — presale (comprar()) only works in PREVENTA. After confirmarCosecha
 purchases can be made. Remaining kg are available for redemption by token holders.
 ```
 
-Cross-reference: see `04-quality-attestation.md` for the next step.
+Cross-reference: la transición COSECHADO → ALMACENADO se ejecuta vía `confirmarAlmacenamiento()` (ORACLE_ROLE); ver `00-INDEX.md` para la state machine completa y `05-redemption-export.md` para la redención (requiere ALMACENADO). El flujo de calidad on-chain (`04-quality-attestation.md`) es FASE 2 (ADR-010), fuera del MVP.

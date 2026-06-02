@@ -26,6 +26,7 @@ Every night at 02:00 UTC, the backend runs an automated job that downloads the l
 - Sumsub holds the full PII — the backend retrieves it on demand only for matching purposes, never stores raw PII in its own DB
 - Backend sanctions job wallet holds `COMPLIANCE_OFFICER_ROLE` on `IdentityRegistry`
 - OFAC/UN/EU/UIF download URLs are accessible (public endpoints)
+- `IdentityRegistry` is **not paused** — `markSanctioned` and `unmarkSanctioned` are mutators and require `whenNotPaused` (FIX H-02)
 
 ---
 
@@ -109,17 +110,20 @@ The backend does NOT store full PII. The matching pipeline is:
                                 )
                                 [COMPLIANCE_OFFICER_ROLE wallet, KMS-signed]
 
-📜 IR        --> 📜 IR        : validate user != address(0)        ✓
-📜 IR        --> 📜 IR        : validate reason not empty           ✓
-📜 IR        --> 📜 IR        : validate !_kyc[user].sanctioned     ✓  (not already sanctioned)
+📜 IR        --> 📜 IR        : whenNotPaused check                 ✓ (FIX H-02)
+📜 IR        --> 📜 IR        : validate user != address(0)         ✓ → ZeroAddressUser
+📜 IR        --> 📜 IR        : validate reason not empty           ✓ → EmptyReason
+📜 IR        --> 📜 IR        : validate evidenceHash != bytes32(0) ✓ → InvalidEvidenceHash (FIX M-01)
+📜 IR        --> 📜 IR        : validate !_kyc[user].sanctioned     ✓ → AlreadySanctioned
 📜 IR        --> 📜 IR        : _kyc[user].sanctioned = true        [EFFECT]
 📜 IR        --> 📜 IR        : _kyc[user].updatedAt = block.timestamp [EFFECT]
 
 📜 IR        ~~> 🚨 Event     : Sanctioned(
-                                  user: "0xBbbb...",
-                                  reason: "OFAC SDN match: score=0.97, entity=Petrov Viktor",
-                                  evidenceHash: 0x1234...,
-                                  timestamp: <block.timestamp>
+                                  user:          "0xBbbb...",
+                                  actor:         <COMPLIANCE_OFFICER wallet>,   // msg.sender, indexed (FIX M-03)
+                                  reason:        "OFAC SDN match: score=0.97, entity=Petrov Viktor",
+                                  evidenceHash:  0x1234...,
+                                  timestamp:     <block.timestamp>
                                 )
 
 🤖 Backend   <-- 📜 IR        : tx confirmed (txHash: "0x...")
@@ -174,26 +178,53 @@ Gas cost: zero.
 
 ### Step 3 — `markSanctioned()` on-chain
 
-**Contract:** `IdentityRegistry.sol`, lines 95–107
+**Contract:** `IdentityRegistry.sol`, function `markSanctioned`
 
 **Caller:** backend job wallet holding `COMPLIANCE_OFFICER_ROLE`
 
+**Signature:**
+```solidity
+function markSanctioned(
+    address user,
+    string calldata reason,
+    bytes32 evidenceHash
+) external onlyRole(COMPLIANCE_OFFICER_ROLE) whenNotPaused
+```
+
 **Validations (fail-fast):**
-1. `user != address(0)` → reverts `ZeroAddressUser()`
-2. `bytes(reason).length > 0` → reverts `EmptyReason()`
-3. `!_kyc[user].sanctioned` → reverts `AlreadySanctioned()` (idempotent: if already sanctioned, skip)
+1. `whenNotPaused` — reverts if contract is paused (FIX H-02)
+2. `user != address(0)` → reverts `ZeroAddressUser()`
+3. `bytes(reason).length == 0` → reverts `EmptyReason()`
+4. `evidenceHash == bytes32(0)` → reverts `InvalidEvidenceHash()` (FIX M-01 — sanciones sin documento de soporte no se aceptan)
+5. `_kyc[user].sanctioned` → reverts `AlreadySanctioned()` (idempotent: if already sanctioned, skip)
 
 **State changes:**
 - `_kyc[user].sanctioned = true`
 - `_kyc[user].updatedAt = block.timestamp`
 
-**Event:** `Sanctioned(address indexed user, string reason, bytes32 evidenceHash, uint64 timestamp)`
+**Event:** `Sanctioned(address indexed user, address indexed actor, string reason, bytes32 evidenceHash, uint64 timestamp)` — `actor` is `msg.sender` (FIX M-03: indexed for forensics)
 
-Note: `evidenceHash` is stored in the event log (not in contract storage). It is a keccak256 hash linking to the match evidence document, which will also be uploaded to Arweave by the backend and stored in PostgreSQL.
+Note: `reason` and `evidenceHash` are stored in the event log only, not in contract storage. `evidenceHash` is a keccak256 hash linking to the match evidence document, which will also be uploaded to Arweave by the backend and stored in PostgreSQL.
 
 **Gas estimate:**
 - ~45,000 gas per `markSanctioned()` call (warm storage update + event)
 - For 2 hits per night: ~90,000 gas total, negligible cost
+
+---
+
+### Pause asymmetry (FIX H-02)
+
+`IdentityRegistry` inherits `Pausable` and `AccessControlDefaultAdminRules` (3-day delay for `DEFAULT_ADMIN_ROLE` transfers, FIX M-08).
+
+| Function | Pausable? | Who can call |
+|---|---|---|
+| `markSanctioned` | Yes (`whenNotPaused`) | `COMPLIANCE_OFFICER_ROLE` |
+| `unmarkSanctioned` | Yes (`whenNotPaused`) | `COMPLIANCE_OFFICER_ROLE` |
+| `pause()` | — | `COMPLIANCE_OFFICER_ROLE` **or** `DEFAULT_ADMIN_ROLE` |
+| `unpause()` | — | `DEFAULT_ADMIN_ROLE` only |
+| All view functions (`isSanctioned`, `canMint`, etc.) | No — views always work | anyone |
+
+Pause does not block views: `canMint` and `canRedeem` continue to gate on-chain operations even while mutators are paused.
 
 ### Step 4 — False Positive Review
 
@@ -212,7 +243,16 @@ For false positives, Compliance Officer calls `unmarkSanctioned()`:
                                 )
                                 [COMPLIANCE_OFFICER_ROLE hardware wallet, Ledger-signed]
 
-📜 IR        ~~> 🚨 Event     : Unsanctioned(user: "0xCccc...", reason: "False positive...")
+📜 IR        --> 📜 IR        : whenNotPaused check              ✓ (FIX H-02)
+📜 IR        --> 📜 IR        : validate user != address(0)      ✓
+📜 IR        --> 📜 IR        : validate reason not empty        ✓
+📜 IR        --> 📜 IR        : validate _kyc[user].sanctioned   ✓ → NotSanctioned if false
+
+📜 IR        ~~> 🚨 Event     : Unsanctioned(
+                                  user:   "0xCccc...",
+                                  actor:  <COMPLIANCE_OFFICER wallet>,   // msg.sender, indexed (FIX M-03)
+                                  reason: "False positive..."
+                                )
 ```
 
 Gas estimate for `unmarkSanctioned()`: ~30,000 gas.
@@ -238,6 +278,8 @@ Gas estimate for `unmarkSanctioned()`: ~30,000 gas.
 | OFAC server down | Retry up to 3 times with 60s backoff. If all fail, skip OFAC for this run and alert Slack. Log as `partial_run`. |
 | Chainalysis API unavailable | Fall back to name-only matching. Log fallback mode. Alert Slack. |
 | `markSanctioned()` called on already-sanctioned address | Reverts `AlreadySanctioned()`. Backend catches and logs as "already sanctioned, skip" — not an error. |
+| `evidenceHash` is zero | Reverts `InvalidEvidenceHash()` (FIX M-01). Backend must always compute a non-zero hash before calling. |
+| Contract is paused | Reverts `EnforcedPause()` (FIX H-02). Backend should detect pause state before sending tx and halt the screening run until unpaused. |
 | Job wallet out of gas | Transaction fails. Alert PagerDuty. Ops tops up wallet. Screening run marked as `partial_failed`. |
 | Match score borderline (0.85-0.95) | Queued for manual review only, no automatic on-chain action. |
 | User has no KYC record in IR yet (tier=0) | `markSanctioned()` still succeeds — the contract stores sanctioned=true regardless of tier. If the user later tries to complete KYC (via `setKYC`), they get tier set but `canMint` will still return `false`. |
@@ -264,9 +306,18 @@ Match #1:
   Entity:      Viktor Petrov (alias "V. Petrov", DOB 1965-11-20, RU)
   Chainalysis score: 0.97
   evidenceHash: keccak256(abi.encode("OFAC-SDN", "SDN-45621", "5e6f7g8h", 1748131200))
-               = 0xabc123...
+               = 0xabc123...     (non-zero — required by FIX M-01)
   markSanctioned tx: 0xdef456...
   Gas used: ~45,000
+
+  Event emitted:
+    Sanctioned(
+      user:         0xBbbb0001...,
+      actor:        <compliance-job wallet>,   // msg.sender, indexed (FIX M-03)
+      reason:       "OFAC SDN match: score=0.97, entity=Petrov Viktor",
+      evidenceHash: 0xabc123...,
+      timestamp:    1748131200
+    )
 
 Match #2:
   Wallet:      0xBbbb0002...

@@ -34,6 +34,7 @@ import {DocumentHashes} from "./libraries/DocumentHashes.sol";
 ///   - MVP simplificado: QualityAttestation (LabRegistry) reservado para fase 2.
 ///   - FIX M-08: usa AccessControlDefaultAdminRules con delay de 3 días para transferencias de
 ///     DEFAULT_ADMIN_ROLE (mitiga lockout accidental o malicioso).
+// slither-disable-next-line unimplemented-functions
 contract AssetVault is
     ERC1155,
     ERC1155Supply,
@@ -95,6 +96,9 @@ contract AssetVault is
     /// @dev Defensa contra revocación post-compra (EDD failure, sanción no formal, etc.) que
     ///      `isSanctioned`/`isFrozen` no cubren. La recuperación off-chain queda en compliance.
     error CannotRefundRevokedAddress();
+
+    /// @dev ADR-016: error usado por pause() cuando el caller no tiene COMPLIANCE_OFFICER ni DEFAULT_ADMIN.
+    error UnauthorizedPauseActor();
 
     /// @notice Cantidad máxima de buyers procesables en una sola llamada a `reembolsarLoteFallido`.
     /// @dev Prevenir DoS por out-of-gas con arrays grandes.
@@ -158,10 +162,11 @@ contract AssetVault is
 
     /// @notice Setea el RedemptionManager (one-time, post-deploy por circular dependency).
     /// @dev Necesario porque RedemptionManager depende de AssetVault y viceversa.
-    function setRedemptionManager(address _redemptionManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (_redemptionManager == address(0)) revert ZeroAddress();
+    function setRedemptionManager(address newRedemptionManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newRedemptionManager == address(0)) revert ZeroAddress();
         if (redemptionManager != address(0)) revert RedemptionManagerAlreadySet();
-        redemptionManager = _redemptionManager;
+        redemptionManager = newRedemptionManager;
+        emit RedemptionManagerSet(newRedemptionManager);
     }
 
     // ---- Mutating: ADMIN_ROLE ----
@@ -374,6 +379,7 @@ contract AssetVault is
         uint256 totalSupplyLote = totalSupply(loteId);
         if (totalSupplyLote == 0) {
             _reembolsado[loteId] = true;
+            emit ReembolsoFinalizado(loteId);
             return;
         }
 
@@ -383,26 +389,39 @@ contract AssetVault is
         uint256 totalDisponible = lote.montoNetoPendiente + (lote.reservaTecnicaUSDC - lote.reservaTecnicaLiberada);
 
         for (uint256 i = 0; i < compradores.length; i++) {
-            address buyer = compradores[i];
-            uint256 balance = balanceOf(buyer, loteId);
-            if (balance == 0) continue;
-
-            if (identityRegistry.isSanctioned(buyer)) revert CannotRefundBlockedAddress();
-            if (identityRegistry.isFrozen(buyer)) revert CannotRefundBlockedAddress();
-            // FIX H-01: bloquea reembolso si el KYC del buyer fue revocado post-compra
-            // (ej.: EDD failure detectado entre la compra y el fallo del lote).
-            if (identityRegistry.getTier(buyer) == 0) revert CannotRefundRevokedAddress();
-
-            uint256 reembolsoUSDC = (totalDisponible * balance) / totalSupplyLote;
-
-            _burn(buyer, loteId, balance);
-
-            if (reembolsoUSDC > 0) {
-                usdc.safeTransfer(buyer, reembolsoUSDC);
-            }
-
-            emit ReembolsoEjecutado(loteId, buyer, balance, reembolsoUSDC);
+            _refundBuyer(loteId, compradores[i], totalDisponible, totalSupplyLote);
         }
+    }
+
+    /// @notice Reembolsa la porción proporcional de escrow de un comprador de un lote FALLIDO.
+    /// @dev Extraído de `reembolsarLoteFallido` para mantener su complejidad ciclomática bajo el
+    ///      umbral. Sigue CEI: checks (sancionado/frozen/revocado) → effect (`_burn`) →
+    ///      interaction (`safeTransfer`). El `nonReentrant` del caller cubre esta función privada.
+    ///      Buyers con balance 0 se saltan (return temprano), preservando el `continue` original.
+    /// @custom:security Los external calls a `identityRegistry`/`usdc` ocurren dentro del loop del
+    ///      caller; el DoS por gas está acotado por `MAX_REFUND_BATCH`.
+    function _refundBuyer(uint256 loteId, address buyer, uint256 totalDisponible, uint256 totalSupplyLote) private {
+        uint256 balance = balanceOf(buyer, loteId);
+        if (balance == 0) return;
+
+        // slither-disable-next-line calls-loop
+        if (identityRegistry.isSanctioned(buyer)) revert CannotRefundBlockedAddress();
+        // slither-disable-next-line calls-loop
+        if (identityRegistry.isFrozen(buyer)) revert CannotRefundBlockedAddress();
+        // FIX H-01: bloquea reembolso si el KYC del buyer fue revocado post-compra
+        // (ej.: EDD failure detectado entre la compra y el fallo del lote).
+        // slither-disable-next-line calls-loop
+        if (identityRegistry.getTier(buyer) == 0) revert CannotRefundRevokedAddress();
+
+        uint256 reembolsoUSDC = (totalDisponible * balance) / totalSupplyLote;
+
+        _burn(buyer, loteId, balance);
+
+        if (reembolsoUSDC > 0) {
+            usdc.safeTransfer(buyer, reembolsoUSDC);
+        }
+
+        emit ReembolsoEjecutado(loteId, buyer, balance, reembolsoUSDC);
     }
 
     /// @notice Marca un lote FALLIDO como reembolso completado. Llamar tras procesar todos los batches.
@@ -413,6 +432,7 @@ contract AssetVault is
         if (lote.estado != LoteEstado.FALLIDO) revert LoteNotInFallido();
         if (_reembolsado[loteId]) revert ReembolsoYaEjecutado();
         _reembolsado[loteId] = true;
+        emit ReembolsoFinalizado(loteId);
     }
 
     // ---- Mutating: TREASURY_SRL_ROLE ----
@@ -469,18 +489,29 @@ contract AssetVault is
         if (totalSupply(loteId) == 0 && lote.estado == LoteEstado.REDENCION_PARCIAL) {
             lote.estado = LoteEstado.AGOTADO;
         }
+
+        emit TokensRedimidos(loteId, from, cantidad, lote.kgRedimidos, lote.estado);
     }
 
     // ---- Mutating: COMPLIANCE_OFFICER_ROLE ----
 
     /// @inheritdoc IAssetVault
-    function pause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    /// @notice Pausa de emergencia del contrato.
+    /// @dev ADR-016 (sistémico): defensa cruzada — COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE
+    ///      pueden pausar. Si un Compliance Officer se compromete, el Safe puede pausar igual.
+    function pause() external whenNotPaused {
+        if (!hasRole(COMPLIANCE_OFFICER_ROLE, msg.sender) && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert UnauthorizedPauseActor();
+        }
         _pause();
         emit EmergencyPaused(msg.sender, uint64(block.timestamp));
     }
 
     /// @inheritdoc IAssetVault
-    function unpause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    /// @notice Despausa el contrato post-incidente.
+    /// @dev ADR-016 (sistémico): SOLO DEFAULT_ADMIN_ROLE (Safe 2-de-3) — decisión deliberada.
+    ///      Si un Compliance Officer comprometido pausó, el Safe debe coordinar el unpause.
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
         emit EmergencyUnpaused(msg.sender, uint64(block.timestamp));
     }
@@ -533,10 +564,25 @@ contract AssetVault is
         if (!isMint && !isBurn) revert TransferP2PNoPermitido();
 
         if (isMint) {
+            // slither-disable-next-line calls-loop
             if (!identityRegistry.canMint(to)) revert NotKYCVerified();
         }
 
         super._update(from, to, ids, values);
+    }
+
+    // ---- ERC1155Supply / IAssetVault: totalSupply override ----
+
+    /// @dev RM-19: resolve diamond inheritance — `totalSupply(uint256)` esta definido en ERC1155Supply
+    ///      Y declarado en IAssetVault. Solidity exige override explicito para satisfacer ambas bases.
+    ///      Delega al `super.totalSupply` heredado de ERC1155Supply.
+    /// @dev Slither flagea `unimplemented-functions` IAssetVault.totalSupply como falso positivo —
+    ///      no resuelve correctamente diamond inheritance via super. El test
+    ///      `test_iniciarRedencion_RevertWhen_CantidadExcedeSupplyTotal` prueba que SI esta implementada
+    ///      (RedemptionManager llama assetVault.totalSupply via IAssetVault y funciona).
+    // slither-disable-next-line unimplemented-functions
+    function totalSupply(uint256 id) public view override(ERC1155Supply, IAssetVault) returns (uint256) {
+        return super.totalSupply(id);
     }
 
     // ---- IERC165 ----

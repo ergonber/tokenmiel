@@ -1,0 +1,151 @@
+name: Contracts CI
+
+# Runs on every push and pull request that touches the Solidity contracts
+# (or this workflow file). The MVP contracts are frozen at 100% branch
+# coverage with 0 Slither findings; this pipeline is the automated guard
+# that keeps them that way.
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "packages/contracts/**"
+      - ".github/workflows/contracts-ci.yml"
+  pull_request:
+    paths:
+      - "packages/contracts/**"
+      - ".github/workflows/contracts-ci.yml"
+
+# Least-privilege: this pipeline only needs to read the repo.
+permissions:
+  contents: read
+
+# A newer push to the same ref cancels the in-flight run.
+concurrency:
+  group: contracts-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: packages/contracts
+
+jobs:
+  build-test-coverage:
+    name: Build · Test · Coverage · Format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with Foundry submodules)
+        uses: actions/checkout@v4
+        with:
+          # lib/forge-std and lib/openzeppelin-contracts are git submodules.
+          # Without this the project does not compile.
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Forge version
+        run: forge --version
+
+      - name: Build (with contract sizes)
+        run: forge build --sizes
+
+      - name: Format check
+        run: forge fmt --check
+
+      - name: Tests (excluding invariants)
+        # Invariants run at 50k x 100 and are exercised in a dedicated nightly
+        # job, not on every PR (they OOM the standard runner).
+        run: forge test --no-match-path "test/invariant/**" -vvv
+
+      - name: Coverage report (excluding invariants)
+        run: |
+          forge coverage --no-match-path "test/invariant/**" --report summary \
+            | tee coverage-summary.txt
+
+      - name: Coverage gate (MVP contracts + libraries must stay at 100%)
+        # Parses the `forge coverage --report summary` table and fails if the
+        # tracked files drop below 100% on the checked column.
+        #   - 3 MVP contracts: 100% branches (and lines)
+        #   - 2 libraries:     100% lines (and branches where they exist)
+        # Table columns (pipe-separated): File | %Lines($3) | %Statements($4) | %Branches($5) | %Funcs($6)
+        run: |
+          set -uo pipefail
+          summary="coverage-summary.txt"
+          fail=0
+
+          extract() { # $1=file  $2=awk-field  -> prints the percentage token e.g. 100.00%
+            awk -F'|' -v file="$1" -v col="$2" '
+              index($0, file) {
+                gsub(/^[ \t]+|[ \t]+$/, "", $col)
+                print $col
+                exit
+              }
+            ' "$summary"
+          }
+
+          require_100() { # $1=file  $2=field  $3=column-label
+            local pct
+            pct="$(extract "$1" "$2")"
+            if [ -z "$pct" ]; then
+              echo "::error::coverage row not found for $1"
+              fail=1
+              return
+            fi
+            case "$pct" in
+              100.00%*) echo "OK   $1  [$3]=$pct" ;;
+              *) echo "::error::$1 $3 coverage is $pct (required 100.00%)"; fail=1 ;;
+            esac
+          }
+
+          echo "----- coverage gate -----"
+          # MVP contracts: gate lines ($3) and branches ($5)
+          for f in src/AssetVault.sol src/IdentityRegistry.sol src/RedemptionManager.sol; do
+            require_100 "$f" 3 "lines"
+            require_100 "$f" 5 "branches"
+          done
+          # Libraries: gate lines ($3) and branches ($5)
+          for f in src/libraries/DocumentHashes.sol src/libraries/QualityRules.sol; do
+            require_100 "$f" 3 "lines"
+            require_100 "$f" 5 "branches"
+          done
+          echo "-------------------------"
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::coverage gate failed — a tracked file dropped below 100%"
+            exit 1
+          fi
+          echo "coverage gate passed"
+
+  slither:
+    name: Static analysis · Slither
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with Foundry submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Slither
+        # Pinned to match the version used in local security review (0.11.5).
+        run: pipx install slither-analyzer==0.11.5
+
+      - name: Run Slither
+        # Same filter as the local review. Fails the job on any high- or
+        # medium-severity finding (the contracts are at 0 findings today).
+        run: |
+          slither . \
+            --filter-paths "lib|test|phase2|script" \
+            --fail-high \
+            --fail-medium

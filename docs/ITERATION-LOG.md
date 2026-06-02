@@ -509,3 +509,42 @@ Foco:
 | Subagentes lanzados | 3 (audit IR: seguridad / gas / flujos) + 2 (implementation + docs) |
 
 ---
+
+## Iteration #4 — Cierre de los 4 gaps de smart contracts + reconciliación de docs (2026-05-29)
+
+**Goal:** cerrar los 4 gaps críticos del handoff (§6) y reconciliar toda la documentación con el código implementado.
+
+**Trigger:** continuación de la fase smart contracts.
+
+### Build
+
+- **Gap 2** (deploy scripts): `script/DeployPlume.s.sol` — `deploy()` + `getConfig()` por `block.chainid` (Anvil 31337 / Plume testnet 98867 / mainnet 98866) + `run()` + reverts (`UnsupportedChainId`, `MissingConfig`). Commit `08a5301`.
+- **Gap 1** (integration tests): `test/integration/Lifecycle.t.sol` — 5 E2E (happy + lote fallido/refund + 3 cancelaciones). Commit `a6ee3cc`.
+- **Gap 3** (AssetVault): `test/unit/AssetVaultBranches.t.sol` (44 tests) + refactor `_refundBuyer` (baja cyclomatic-complexity) + `slither-disable` de los 4 calls-loop. Commit `f9b9066`.
+- **Gap 4** (IdentityRegistry): `test/unit/IdentityRegistryBranches.t.sol` (13 tests) + `slither-disable` de los 4 timestamp. Commit `9c49a9c`.
+
+### Test
+
+- **216/216 tests verdes** (sin invariants). 3 contratos MVP: **100% branches**. Slither **0 findings** en los 3.
+
+### Document
+
+- Reconciliados con el código: handoff (`aa11f33`), 01-deployment (`cba043e`), CONTRACT-SPECS (`d119faf`), flows 04/05/06 + ADR-003 (`b1320d9`), TEST-SPECS (`8d4d2cf`), ARQUITECTURA-TECNICA-MVP (`69c1f48`).
+
+### Review
+
+- Slither standalone en los 3 contratos (0 findings). `forge fmt`. Cada reconciliación de docs verificada por spot-check contra el código (no solo el reporte de los sub-agentes).
+
+### Métricas iteración #4
+
+| Métrica | Valor |
+|---|---|
+| Gaps críticos cerrados | 4 / 4 |
+| Tests nuevos | 67 (44 AV branches + 13 IR branches + 5 Lifecycle + 5 DeployPlume) |
+| Tests totales | 216 (sin invariants) |
+| Branch coverage (3 contratos MVP) | 100% |
+| Slither findings | 0 |
+| Docs reconciliados | 7 grupos (handoff, 01-deployment, CONTRACT-SPECS, TEST-SPECS, ARQUITECTURA, flows 04/05/06, ADR-003) |
+| Pendientes | RM-29 (invariant OOM), gas-analysis RM, audit addendum RM, auditoría externa, deploy testnet, PR |
+
+---

@@ -37,9 +37,36 @@ interface IRedemptionManager {
         uint256 cantidadTokens,
         bytes32 datosEnvioHash
     );
-    event RedencionEnExportacion(uint256 indexed redencionId, string dueNumero);
-    event RedencionCompletada(uint256 indexed redencionId, bytes32 hashBLAWB);
-    event RedencionCancelada(uint256 indexed redencionId, bytes32 reason);
+    /// @notice Emitted when the oracle confirms the customs declaration is filed.
+    /// @param redencionId ID of the redemption transitioning toward export.
+    /// @param actor ORACLE_ROLE address (Safe signer) that submitted the DUE number.
+    /// @param dueNumero Customs declaration number (DUE). Max 64 chars.
+    event RedencionEnExportacion(uint256 indexed redencionId, address indexed actor, string dueNumero);
+
+    /// @notice Emitted when the redemption is fully completed (tokens burned, BL/AWB recorded).
+    /// @param redencionId ID of the completed redemption.
+    /// @param actor ORACLE_ROLE address (Safe signer) that finalized the redemption.
+    /// @param hashBLAWB Hash of the Bill of Lading or Air Waybill.
+    event RedencionCompletada(uint256 indexed redencionId, address indexed actor, bytes32 hashBLAWB);
+
+    /// @notice Emitted when the redemption is cancelled (lock released, no burn).
+    /// @param redencionId ID of the cancelled redemption.
+    /// @param actor ORACLE_ROLE address (Safe signer) that triggered the cancellation.
+    /// @param reason Hash of the cancellation reason (e.g., keccak256("aduana-rechazada")).
+    event RedencionCancelada(uint256 indexed redencionId, address indexed actor, bytes32 reason);
+
+    /// @notice Emitted when the contract is paused via emergency procedure (RM-15, ADR-013 alignment).
+    /// @dev Emitted ADDITIONALLY to OpenZeppelin's default `Paused(account)`. Indexers reading the
+    ///      project convention should listen for this event for actor + timestamp forensics.
+    /// @param actor Address (COMPLIANCE_OFFICER_ROLE) that called pause().
+    /// @param timestamp Block timestamp of the pause event.
+    event EmergencyPaused(address indexed actor, uint64 timestamp);
+
+    /// @notice Emitted when the contract is unpaused after an emergency.
+    /// @dev Emitted ADDITIONALLY to OpenZeppelin's default `Unpaused(account)`.
+    /// @param actor Address (COMPLIANCE_OFFICER_ROLE) that called unpause().
+    /// @param timestamp Block timestamp of the unpause event.
+    event EmergencyUnpaused(address indexed actor, uint64 timestamp);
 
     // ---- Mutating functions ----
 
@@ -53,12 +80,19 @@ interface IRedemptionManager {
         external
         returns (uint256 redencionId);
 
-    /// @notice Confirma la exportacion fisica y quema los tokens del comprador.
-    /// @dev Solo ORACLE_ROLE. No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).
+    /// @notice Registra la emision del DUE (fase 1 de 2 — ADR-017).
+    /// @dev Solo ORACLE_ROLE. Transiciona INICIADA → EN_EXPORTACION. No quema tokens todavia.
+    ///      No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).
     /// @param redencionId ID de la redencion a confirmar.
     /// @param dueNumero Numero de DUE (Declaracion Unica de Exportacion). Max 64 chars.
+    function confirmarExportacion(uint256 redencionId, string calldata dueNumero) external;
+
+    /// @notice Completa la redencion al recibir BL/AWB — quema tokens del comprador (fase 2 de 2 — ADR-017).
+    /// @dev Solo ORACLE_ROLE. Transiciona EN_EXPORTACION → COMPLETADA. Burn aqui.
+    ///      No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).
+    /// @param redencionId ID de la redencion a completar (debe estar en EN_EXPORTACION).
     /// @param hashBLAWB Hash del Bill of Lading o Air Waybill.
-    function confirmarExportacion(uint256 redencionId, string calldata dueNumero, bytes32 hashBLAWB) external;
+    function completarRedencion(uint256 redencionId, bytes32 hashBLAWB) external;
 
     /// @notice Cancela una redencion en curso, liberando el lock contable del comprador.
     /// @dev Solo ORACLE_ROLE. No bloqueado por pause (ver CONTRACT-SPECS §6.13.8).
@@ -95,5 +129,15 @@ interface IRedemptionManager {
 
     /// @notice Longitud maxima del numero DUE en caracteres.
     /// @return Limite de caracteres para dueNumero (64).
+    /// @dev Slither flagea esto como naming-convention violation porque el getter auto-generado
+    ///      de la constante publica MAX_DUE_NUMERO_LENGTH no esta en mixedCase. Es falso positivo:
+    ///      las constantes deben ser SCREAMING_SNAKE_CASE per CLAUDE.md §5 + Solidity style guide.
+    // slither-disable-next-line naming-convention
     function MAX_DUE_NUMERO_LENGTH() external view returns (uint256);
+
+    /// @notice Tiempo despues del cual el comprador puede self-cancel una redencion stuck.
+    /// @return Duracion en segundos (ADR-015, default 60 dias).
+    /// @dev Falso positivo de naming-convention idem MAX_DUE_NUMERO_LENGTH.
+    // slither-disable-next-line naming-convention
+    function REDENCION_TIMEOUT() external view returns (uint256);
 }

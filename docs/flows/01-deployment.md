@@ -1,5 +1,7 @@
 # Flow 01: Deployment of 4 Contracts + Role Bootstrap
 
+> **⚠️ MVP RECONCILIATION (2026-05-28):** This document describes the original **4-contract** design including `LabRegistry`. The **current MVP deploys only 3 contracts** — `IdentityRegistry`, `AssetVault`, `RedemptionManager` — because **`LabRegistry` is deferred to phase 2** (`phase2/`, ADR-010). The real deploy script is **`script/DeployPlume.s.sol`** (`deploy()` + `getConfig()` per `block.chainid` + `run()`), and `AssetVault.InitParams` has **no `labRegistry` field**. Step 2 (LabRegistry deploy) and Step 6 (SeedLabs) below do NOT apply to the MVP; the real deploy order is `IdentityRegistry → AssetVault → RedemptionManager → setRedemptionManager`. The rest (roles, governance, verification, error cases) stays a valid reference.
+
 ## Executive Summary
 
 This flow covers the one-time deployment of the four immutable smart contracts that make up the tokenization platform, in the correct dependency order, followed by the configuration of roles and the wiring of circular dependencies (`AssetVault` ↔ `RedemptionManager`). The entire deployment must be executed in a single coordinated session; the deployer EOA only holds roles during the deployment window and must surrender them to the Safe multi-sig before the session ends.

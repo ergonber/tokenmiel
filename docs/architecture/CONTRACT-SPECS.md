@@ -1,9 +1,13 @@
-# Smart Contract Specifications (v1.0)
+# Smart Contract Specifications (v2.0)
 
-> Specs detalladas de los 4 smart contracts del MVP de tokenización de RWA agrícola.
+> Specs detalladas de los **3 smart contracts MVP** de tokenización de RWA agrícola.
 > Derivado de `ARQUITECTURA-TECNICA-MVP.md` v2.0 (Decisiones 5, 6, 7, 7B, sección 9).
 > **Este documento NO contiene implementación**: solo signatures, NatSpec, structs, errors y eventos.
 > Sirve como input directo para subagentes de implementación (Foundry) y tests.
+>
+> **v2.0 — reconciliación con código real (2026-05-28):** LabRegistry marcado como FASE 2 (ADR-010,
+> ADR-017 2-phase export state machine, ADR-016 pause asymmetry, ADR-015 timeout policy,
+> FIX M-08 AccessControlDefaultAdminRules, FIX H-02 IdentityRegistry Pausable).
 
 ---
 
@@ -15,7 +19,7 @@
 4. [Contrato 1: `AssetVault.sol`](#4-contrato-1-assetvaultsol)
 5. [Contrato 2: `IdentityRegistry.sol`](#5-contrato-2-identityregistrysol)
 6. [Contrato 3: `RedemptionManager.sol`](#6-contrato-3-redemptionmanagersol)
-7. [Contrato 4: `LabRegistry.sol`](#7-contrato-4-labregistrysol)
+7. [FASE 2 — `LabRegistry.sol` (reservado, ADR-010)](#7-fase-2--labregistrysol-reservado-adr-010)
 8. [Interfaces (`I*.sol`)](#8-interfaces-isol)
 9. [Libraries](#9-libraries)
 10. [Decisiones derivadas y conflictos detectados](#10-decisiones-derivadas-y-conflictos-detectados)
@@ -93,8 +97,12 @@ Cada función external/public y cada evento debe tener:
 
 ### 1.9 Inmutabilidad y pausabilidad
 
-- **Sin proxies** (sin UUPS, sin Transparent, sin Diamond). Los 4 contratos son inmutables.
-- **`Pausable`** se usa para `pause()` de emergencia en `AssetVault` y `RedemptionManager`. `IdentityRegistry` y `LabRegistry` no se pausan (su pause crearía dead-locks; en su lugar se desactivan registros individualmente).
+- **Sin proxies** (sin UUPS, sin Transparent, sin Diamond). Los 3 contratos MVP son inmutables.
+- **`Pausable`** se usa en los 3 contratos MVP: `AssetVault`, `RedemptionManager` e `IdentityRegistry`
+  (FIX H-02 — ADR-016).
+- **Asimetría de pause (ADR-016):** `pause()` = `COMPLIANCE_OFFICER_ROLE` OR `DEFAULT_ADMIN_ROLE`;
+  `unpause()` = `DEFAULT_ADMIN_ROLE` únicamente. Aplica a los 3 contratos.
+- `LabRegistry` (FASE 2) no se pausa globalmente; las desactivaciones individuales (`deactivateLab`) cumplen esa función.
 
 ---
 
@@ -185,9 +193,11 @@ error ReservaTecnicaInsufficient(uint256 loteId, uint256 requested, uint256 avai
 
 ### 4.1 Propósito
 
-`AssetVault` es el **contrato principal del MVP**. Implementa el estándar ERC-1155 donde cada `tokenId` representa un lote (`LoteMiel`), con balance = cantidad de tokens (0.5 kg cada uno) propiedad de cada wallet. Mantiene el ciclo de vida completo del lote (PREVENTA → COSECHADO → QUALITY_ATTESTED → ALMACENADO → REDENCION_PARCIAL / AGOTADO / FALLIDO), embebe la reserva técnica (15-20% del USDC prepagado retenido como buffer operacional), embebe el compliance hook (override de `_update` que prohibe transferencias P2P) y embebe el oráculo de calidad (`QualityAttestation` populated por `confirmarCalidad`).
+`AssetVault` es el **contrato principal del MVP**. Implementa el estándar ERC-1155 donde cada `tokenId` representa un lote (`LoteMiel`), con balance = cantidad de tokens (0.5 kg cada uno) propiedad de cada wallet. Mantiene el ciclo de vida del lote (PREVENTA → COSECHADO → ALMACENADO → REDENCION_PARCIAL → AGOTADO / FALLIDO), embebe la reserva técnica (15-20% del USDC prepagado retenido como buffer operacional con modelo escrow total), embebe el compliance hook (override de `_update` que prohíbe transferencias P2P) y valida KYC vía `IdentityRegistry`.
 
-El contrato **no maneja USDC directamente** durante la compra: el backend (`BACKEND_SIGNER_ROLE`) ya recibió el pago off-chain (Stripe/MoonPay/Ramp/SEPA) y llama a `comprar()` para mintear los tokens al wallet del comprador. La reserva técnica se entiende como un **registro contable** dentro del struct `LoteMiel`; el USDC físico vive en wallets operativas Safe Wyoming. La liberación de la reserva al productor SRL la dispara `confirmarCosecha`, ejecutada por `ORACLE_ROLE` (Safe multi-firma 2-de-3) que también dispara la transferencia USDC desde la wallet `TREASURY_SRL_ROLE` controlada externamente.
+> **Nota MVP:** `QualityAttestation`, `confirmarCalidad`, el estado `QUALITY_ATTESTED` y la dependencia `ILabRegistry labRegistry` fueron removidos del MVP y reservados para FASE 2 vía `LabRegistry` standalone (ADR-010). El estado COSECHADO transiciona directamente a ALMACENADO en el MVP.
+
+El contrato **maneja USDC directamente** con modelo escrow total (FIX H-01): el backend (`BACKEND_SIGNER_ROLE`) transfiere USDC al contrato antes de llamar `comprar()` para mintear tokens. El monto neto se libera al productor en `confirmarCosecha`; la reserva técnica queda en el contrato hasta `liberarReservaTecnica`. Si el lote falla en PREVENTA, el 100% es reembolsable on-chain vía `reembolsarLoteFallido`.
 
 ### 4.2 Herencias OpenZeppelin (orden C3)
 
@@ -196,27 +206,30 @@ contract AssetVault is
     ERC1155,
     ERC1155Supply,
     ERC1155Pausable,
-    AccessControl,
-    ReentrancyGuard
+    AccessControlDefaultAdminRules,
+    ReentrancyGuard,
+    IAssetVault
 ```
 
 **Notas C3 linearization:**
 - `ERC1155Supply` debe ir antes de `ERC1155Pausable` para que el `_update` chain compute supply correctamente antes del pause check.
-- `AccessControl` después de los ERC1155 mixins para que `supportsInterface` se resuelva correctamente.
+- `AccessControlDefaultAdminRules` (FIX M-08) reemplaza `AccessControl`. Agrega un delay de 3 días para transferencias de `DEFAULT_ADMIN_ROLE`, mitigando lockout accidental o malicioso. La constante `ADMIN_TRANSFER_DELAY = 3 days` está declarada en el contrato.
 - `ReentrancyGuard` al final (no afecta linearization, solo modifier).
 - **Override obligatorio de `_update`** para combinar `ERC1155Supply._update` + `ERC1155Pausable._update` + el bloqueo de transfers P2P custom.
-- **Override obligatorio de `supportsInterface`** para combinar `ERC1155.supportsInterface` + `AccessControl.supportsInterface`.
+- **Override obligatorio de `supportsInterface`** para combinar `ERC1155.supportsInterface` + `AccessControlDefaultAdminRules.supportsInterface`.
 
 ### 4.3 Roles definidos
 
 | Rol | Identidad típica | Funciones que controla |
 |---|---|---|
-| `DEFAULT_ADMIN_ROLE` | Safe multi-sig 2-de-3 (cofundadores) | `grantRole`, `revokeRole`. Bootstrap inicial |
-| `ADMIN_ROLE` | Safe multi-sig 2-de-3 | `crearLote`, gestión URI |
-| `BACKEND_SIGNER_ROLE` | Wallet del backend (AWS KMS / GCP KMS) | `comprar` (mint tras pago confirmado off-chain) |
-| `COMPLIANCE_OFFICER_ROLE` | Compliance officer (hardware wallet) | `pause`, `unpause`, congelamiento de lotes individuales |
-| `ORACLE_ROLE` | Safe multi-sig 2-de-3 | `confirmarCosecha`, `confirmarCalidad`, `confirmarAlmacenamiento`, `marcarFallido`, `reembolsarLoteFallido` |
-| `TREASURY_SRL_ROLE` | Hardware wallet del tesorero designado | Recipient externo del USDC liberado. **No ejecuta funciones en el contrato**; figura para auditoría off-chain. Documentado pero **no necesario como rol on-chain** (CONFLICT: ver sección 10) |
+| `DEFAULT_ADMIN_ROLE` | Safe multi-sig 2-de-3 (cofundadores) | `grantRole`, `revokeRole`, `unpause`. Bootstrap inicial. Con delay 3 días (FIX M-08) |
+| `ADMIN_ROLE` | Safe multi-sig 2-de-3 | `crearLote` |
+| `BACKEND_SIGNER_ROLE` | Wallet del backend (AWS KMS / GCP KMS) | `comprar` (mint tras pago + USDC transferido al contrato) |
+| `COMPLIANCE_OFFICER_ROLE` | Compliance officer (hardware wallet) | `pause` (junto con DEFAULT_ADMIN_ROLE — ADR-016) |
+| `ORACLE_ROLE` | Safe multi-sig 2-de-3 | `confirmarCosecha`, `confirmarAlmacenamiento`, `marcarFallido`, `reembolsarLoteFallido`, `finalizarReembolso` |
+| `TREASURY_SRL_ROLE` | Hardware wallet del tesorero designado | `liberarReservaTecnica` (transfiere reserva técnica al productor desde escrow del contrato) |
+
+> **ADR-016 pause asymmetry:** `pause()` puede ser invocado por `COMPLIANCE_OFFICER_ROLE` OR `DEFAULT_ADMIN_ROLE`. `unpause()` solo por `DEFAULT_ADMIN_ROLE`. Emite eventos `EmergencyPaused` / `EmergencyUnpaused`.
 
 ### 4.4 Constantes específicas
 
@@ -234,151 +247,123 @@ bytes32 public constant TREASURY_SRL_ROLE       = keccak256("TREASURY_SRL_ROLE")
 
 ```solidity
 /// @notice Estados válidos del ciclo de vida de un lote.
-/// @dev Transiciones permitidas:
-///      PREVENTA → COSECHADO → QUALITY_ATTESTED → ALMACENADO
-///                                                 ├→ REDENCION_PARCIAL → AGOTADO
-///                                                 └→ AGOTADO
-///      Desde cualquiera (excepto AGOTADO y FALLIDO) → FALLIDO.
+/// @dev Transiciones permitidas (MVP — sin QUALITY_ATTESTED):
+///      PREVENTA → COSECHADO → ALMACENADO → REDENCION_PARCIAL → AGOTADO
+///      Desde PREVENTA o COSECHADO → FALLIDO.
 ///      AGOTADO y FALLIDO son terminales (no se vuelve atrás).
+///      NOTA: QUALITY_ATTESTED removido del MVP; reservado para FASE 2 vía LabRegistry (ADR-010).
 enum LoteEstado {
     PREVENTA,            // 0 - inicial, recibe compras
     COSECHADO,           // 1 - cosecha confirmada con hash SENASAG
-    QUALITY_ATTESTED,    // 2 - palinología + NMR confirmados por labs
-    ALMACENADO,          // 3 - contrato depósito firmado
-    REDENCION_PARCIAL,   // 4 - redenciones en curso
-    AGOTADO,             // 5 - todo redimido (terminal)
-    FALLIDO              // 6 - terminal, reembolso pro-rata
+    ALMACENADO,          // 2 - contrato depósito firmado
+    REDENCION_PARCIAL,   // 3 - al menos una redención completada (burn parcial)
+    AGOTADO,             // 4 - todo redimido (terminal)
+    FALLIDO              // 5 - terminal, reembolso pro-rata
 }
 ```
 
 ### 4.6 Structs
 
-#### 4.6.1 `QualityAttestation` (anidado en `LoteMiel`)
+> **Nota MVP:** `QualityAttestation` fue removido. No existe en el MVP; reservado para FASE 2 (ADR-010).
+
+#### 4.6.1 `TipoCertificadoOrigen`
 
 ```solidity
-/// @notice Attestation de calidad firmada por 2+ labs certificados.
-/// @dev Storage layout (slot por slot, dado que mezcla dynamic types):
-///      slot N:    labAddresses (dynamic array header)
-///      slot N+1:  pollenSpecies (2 bytes) + pollenPercentage (1) + nmrPassed (1) +
-///                 c4Passed (1) + residuesPassed (1) + isMonofloralCertified (1) +
-///                 testedAt (8) -> fits in 14 bytes packed
-///      slot N+2:  fullReportHashes (dynamic array header)
-///      Los arrays dinámicos consumen un slot por su length + heap separado para data.
-struct QualityAttestation {
-    address[] labAddresses;          // labs que firmaron la attestation
-    bytes2    pollenSpecies;         // código botánico (ISO o convención interna). e.g. "RM" para Romero
-    uint8     pollenPercentage;      // 0-100, real (no normalizado)
-    bool      nmrPassed;             // detección adulteración con jarabes
-    bool      c4Passed;              // detección adulteración con C4 sugars (AOAC 998.12)
-    bool      residuesPassed;        // pesticidas/antibióticos dentro de límites UE MRL
-    bool      isMonofloralCertified; // computed: pollenPct >= 45 && nmrPassed && c4Passed && residuesPassed
-    uint64    testedAt;              // unix timestamp del cierre de attestation
-    bytes32[] fullReportHashes;      // un hash por reporte completo (orden = labAddresses)
+/// @notice Tipo de certificado de origen para exportación.
+enum TipoCertificadoOrigen {
+    NONE,
+    FORM_A,
+    EUR_1,
+    OTHER
 }
 ```
-
-**Razón del orden:** los `bool` + `uint8` + `bytes2` + `uint64` se empacan en un único slot (14 bytes usados de 32). Arrays dinámicos al inicio/final no afectan el packing del bloque escalar central.
 
 #### 4.6.2 `LoteMiel`
 
 ```solidity
 /// @notice Estado completo de un lote de miel tokenizado.
-/// @dev Storage layout pensado para minimizar slots de campos escalares.
-///      slot 0:  loteId (32)                              -> 1 slot
-///      slot 1:  productor (20) + estado (1) + reservaBps (2) + reservaReleased (1) + ... padding
-///      slot 2:  kgEsperados (32)                         -> 1 slot
-///      slot 3:  kgCosechadosReal (32)                    -> 1 slot
-///      slot 4:  kgRedimidos (32)                         -> 1 slot
-///      slot 5:  precioUSDCPorToken (32)                  -> 1 slot
-///      slot 6:  reservaTecnicaUSDCInicial (32)
-///      slot 7:  reservaTecnicaUSDCDisponible (32)
-///      slot 8:  hashFSA (32)
-///      slot 9:  hashSenasag (32)
-///      slot 10: hashAnalisisLab (32)
-///      slot 11: hashContratoDeposito (32)
-///      slot 12: createdAt (8) + cosechadoAt (8) + qualityAttestedAt (8) + almacenadoAt (8)
-///      slot 13: qualityAttestation (struct anidado consume sus propios slots)
+/// @dev Todos los campos escalares están en IAssetVault.sol (fuente de verdad).
 struct LoteMiel {
-    // ---- slot 0 ----
-    uint256 loteId;                       // ID único, también es el ERC-1155 tokenId
-
-    // ---- slot 1 (packed) ----
-    address productor;                    // 20 bytes - wallet del apicultor productor
-    LoteEstado estado;                    // 1 byte (enum stored as uint8)
-    uint16     reservaTecnicaBps;         // 2 bytes - bps de reserva técnica (1500-2000)
-    bool       reservaTecnicaReleased;    // 1 byte - true cuando se liberó al productor
-    // 8 bytes restantes libres en slot 1
-
-    // ---- slot 2 ----
-    uint256 kgEsperadosTotal;             // kg totales planeados (gramos = kg * 1000)
-    // ---- slot 3 ----
-    uint256 kgCosechadoReal;              // kg confirmados en cosecha
-    // ---- slot 4 ----
-    uint256 kgRedimidos;                  // kg ya redimidos (entregados)
-
-    // ---- slot 5 ----
-    uint256 precioUSDCPorToken;           // precio fijo en USDC base units (6 decimales) por token
-    // ---- slot 6 ----
-    uint256 reservaTecnicaUSDCInicial;    // monto total reservado, en USDC base units
-    // ---- slot 7 ----
-    uint256 reservaTecnicaUSDCDisponible; // monto remanente (para reembolsos pro-rata si FALLIDO)
-
-    // ---- slots 8-11 ----
-    bytes32 hashFSA;                      // hash del fact-sheet del lote (creación)
-    bytes32 hashSenasag;                  // hash certificado cosecha SENASAG
-    bytes32 hashAnalisisLab;              // hash del análisis estándar (HMF, humedad, diastasa)
-    bytes32 hashContratoDeposito;         // hash del contrato de depósito firmado
-
-    // ---- slot 12 (packed timestamps) ----
-    uint64 createdAt;
-    uint64 cosechadoAt;
-    uint64 qualityAttestedAt;
-    uint64 almacenadoAt;
-
-    // ---- slot 13+ ----
-    QualityAttestation qualityAttestation; // sub-struct, consume slots adicionales
+    uint256 kgEsperados;
+    uint256 kgCosechadosReal;
+    uint256 kgRedimidos;
+    uint256 precioPorTokenUSDC;
+    uint256 reservaTecnicaUSDC;
+    uint256 reservaTecnicaLiberada;
+    /// @notice Monto neto retenido en escrow (FIX H-01). Liberado al productor en confirmarCosecha.
+    ///         Si el lote FALLA en PREVENTA, disponible para reembolso 100% on-chain.
+    uint256 montoNetoPendiente;
+    uint64 fechaCosechaEstimada;
+    LoteEstado estado;
+    uint64 fechaCreacion;
+    bytes2 origenGeografico;
+    uint16 reservaBps;
+    bytes32 hashFSA;
+    bytes32 hashSenasag;
+    bytes32 hashAnalisisLab;
+    bytes32 hashContratoDeposito;
+    bytes32 hashCertificadoOrigen;
+    bytes32 hashActaCosecha;
+    bytes32 hashFotosApiario;
+    address productorSRL;
+    uint8 variedadMonofloral;
+    TipoCertificadoOrigen tipoCertificadoOrigen;
+    string motivoFallo;
 }
 ```
 
-**Notas de packing:**
-- Slot 1 podría empaquetar también un `uint64 createdAt` si interesa reducir 1 slot más, pero priorizo legibilidad agrupando timestamps en slot 12.
-- `bytes32` no se puede empacar con nada menor.
-- `qualityAttestation` permanece al final para no romper el packing escalar previo.
+**Nota de diseño:** `confirmarCosecha` recibe 8 hashes (`hashSenasag`, `hashAnalisisLab`, `hashActaCosecha`, `hashFotosApiario`, `hashCertificadoOrigen`, `tipoCertificado`). El hash de análisis de lab que se almacena en `hashAnalisisLab` es el hash estándar (HMF, humedad, diastasa) — distinto del análisis palinológico de FASE 2.
 
 ### 4.7 State variables
 
 ```solidity
+/// @notice Dirección del token USDC en la chain de despliegue.
+/// @dev Inmutable. Modelo escrow total: USDC retenido en el contrato hasta confirmarCosecha.
+IERC20 public immutable usdc;
+
 /// @notice Dirección del contrato IdentityRegistry consultado para enforcement KYC.
 IIdentityRegistry public immutable identityRegistry;
 
-/// @notice Dirección del contrato LabRegistry consultado para verificar firmas de attestation.
-ILabRegistry public immutable labRegistry;
+/// @notice Dirección del RedemptionManager autorizado a llamar burnForRedemption (one-time set).
+/// @dev Mutable una sola vez: setRedemptionManager() callable por DEFAULT_ADMIN_ROLE.
+///      Valor 0 antes de ser configurado (RedemptionManagerNotSet).
+address public redemptionManager;
 
-/// @notice Dirección del token USDC en la chain de despliegue.
-/// @dev Inmutable. El contrato no maneja USDC directamente excepto para reembolsos en FALLIDO.
-IERC20 public immutable usdc;
+// NOTA: labRegistry removido del MVP. Se reactivará en FASE 2 (ADR-010).
 
 /// @notice Storage de los lotes indexados por loteId.
-mapping(uint256 loteId => LoteMiel) private _lotes;
+mapping(uint256 => LoteMiel) private _lotes;
 
-/// @notice Lista de loteIds existentes para enumeración off-chain (no usar para iteración on-chain).
-uint256[] private _loteIds;
+/// @notice Marca de reembolso completado por lote (paginación de reembolsarLoteFallido).
+mapping(uint256 => bool) private _reembolsado;
 
-/// @notice Contador monotónico para asignar loteId.
-uint256 public nextLoteId;
+/// @notice Cantidad máxima de compradores procesables en un batch de reembolso.
+/// @dev Previene DoS por out-of-gas. Valor: 100.
+uint256 public constant MAX_REFUND_BATCH = 100;
 
-/// @notice URI metadata por lote (sobreescribe la base de ERC-1155).
-mapping(uint256 loteId => string) private _loteURI;
+/// @notice Delay para transferencias de DEFAULT_ADMIN_ROLE (FIX M-08).
+/// @dev Valor: 3 días (259200 segundos).
+uint48 public constant ADMIN_TRANSFER_DELAY = 3 days;
+```
 
-/// @notice Para reembolsos pro-rata en FALLIDO: lista de compradores conocidos por lote.
-/// @dev Mantenida vía hook en `_update` cuando se mintea por primera vez a una nueva address.
-mapping(uint256 loteId => address[]) private _compradoresPorLote;
+#### 4.7.1 `InitParams` (struct de constructor)
 
-/// @notice Evita duplicar addresses en `_compradoresPorLote`.
-mapping(uint256 loteId => mapping(address => bool)) private _esCompradorRegistrado;
-
-/// @notice Marca de attestation hashes ya consumidos (evita replay de firmas).
-mapping(bytes32 attestationDigest => bool consumed) private _attestationConsumed;
+```solidity
+/// @notice Parámetros de inicialización agrupados.
+/// @dev Patrón Uniswap V4 / Aave V3 — evita stack-too-deep.
+///      NOTA: campo labRegistry removido en MVP (FASE 2, ADR-010).
+struct InitParams {
+    address admin;
+    address adminOperator;
+    address backendSigner;
+    address complianceOfficer;
+    address complianceOfficerSuplente;
+    address oracleSafe;
+    address treasurySRL;
+    IERC20 usdc;
+    IIdentityRegistry identityRegistry;
+    string uri;
+}
 ```
 
 ### 4.8 Eventos
@@ -387,345 +372,320 @@ mapping(bytes32 attestationDigest => bool consumed) private _attestationConsumed
 /// @notice Emitido al crear un nuevo lote en estado PREVENTA.
 event LoteCreado(
     uint256 indexed loteId,
-    address indexed productor,
-    uint256 kgEsperadosTotal,
-    uint256 precioUSDCPorToken,
-    uint16  reservaTecnicaBps,
-    bytes32 hashFSA
+    uint256 kgEsperados,
+    uint256 precioPorTokenUSDC,
+    address indexed productorSRL,
+    bytes32 hashFSA,
+    uint16 reservaBps
 );
 
 /// @notice Emitido tras una compra exitosa (mint).
 event LoteComprado(
     uint256 indexed loteId,
-    address indexed buyer,
+    address indexed comprador,
     uint256 cantidadTokens,
-    uint256 amountUSDC,
+    uint256 montoUSDC,
+    uint256 reservaRetenida,
     bytes32 paymentRefHash
 );
 
-/// @notice Emitido al confirmar cosecha por el oráculo Safe multi-firma.
+/// @notice Emitido al confirmar cosecha.
 event CosechaConfirmada(
     uint256 indexed loteId,
-    uint256 kgCosechadoReal,
+    uint256 kgRealCosechado,
     bytes32 hashSenasag,
-    bytes32 hashAnalisisLab
+    bytes32 hashAnalisisLab,
+    bytes32 hashActaCosecha,
+    bytes32 hashCertificadoOrigen
 );
 
-/// @notice Emitido al confirmar attestation de calidad multi-lab.
-event CalidadConfirmada(
-    uint256 indexed loteId,
-    address[] labAddresses,
-    bytes2 pollenSpecies,
-    uint8 pollenPercentage,
-    bool isMonofloralCertified
-);
+/// @notice Emitido cuando el monto neto en escrow se libera al productor (post-cosecha).
+event MontoNetoLiberado(uint256 indexed loteId, uint256 monto, address indexed destinatario);
 
 /// @notice Emitido al confirmar almacenamiento (contrato de depósito firmado).
 event AlmacenamientoConfirmado(
     uint256 indexed loteId,
-    bytes32 hashContratoDeposito
+    bytes32 hashContratoDeposito,
+    address indexed almacenAutorizado
 );
 
 /// @notice Emitido al marcar un lote como FALLIDO.
-event LoteFallido(
-    uint256 indexed loteId,
-    string motivo,
-    bytes32 hashEvidencia
-);
+event LoteFallido(uint256 indexed loteId, string motivo);
 
 /// @notice Emitido cuando se libera la reserva técnica al productor.
-event ReservaTecnicaLiberada(
-    uint256 indexed loteId,
-    address indexed productor,
-    uint256 montoUSDC
-);
+event ReservaTecnicaLiberada(uint256 indexed loteId, uint256 monto, address indexed destinatario);
 
 /// @notice Emitido durante reembolso pro-rata por lote fallido.
 event ReembolsoEjecutado(
     uint256 indexed loteId,
-    address indexed buyer,
+    address indexed comprador,
     uint256 tokensQuemados,
-    uint256 amountUSDCDevuelto
+    uint256 usdcDevuelto
 );
 
-/// @notice Emitido cuando RedemptionManager solicita burn de tokens en escrow.
-event TokensRedimidos(
-    uint256 indexed loteId,
-    address indexed buyer,
-    uint256 cantidadTokens
-);
+/// @notice Emitido al pausar de emergencia (ADR-016).
+event EmergencyPaused(address indexed officer, uint64 timestamp);
 
-/// @notice Emitido al cambiar la URI metadata de un lote.
-event LoteURIUpdated(uint256 indexed loteId, string newURI);
+/// @notice Emitido al despausar (ADR-016).
+event EmergencyUnpaused(address indexed officer, uint64 timestamp);
 ```
+
+> **Removido:** `CalidadConfirmada` (FASE 2 — `confirmarCalidad` no existe en MVP). `TokensRedimidos` y `LoteURIUpdated` no están en el contrato real; el burn se observa como evento ERC-1155 `TransferSingle` con `to == address(0)`.
 
 ### 4.9 Custom errors
 
 ```solidity
-// Identity / KYC
-error NotKYCVerified(address account);
-error InsufficientKYCTier(address account, uint8 currentTier, uint8 requiredTier);
-error AddressSanctioned(address account);
-error AddressFrozen(address account);
+// Zero address / inputs
+error ZeroAddress();
+error InvalidKgEsperados();
+error InvalidPrecio();
+error InvalidHash();
+error ReservaBpsOutOfRange();
+error CantidadTokensCero();
+error EmptyMotivo();
+error EmptyBuyers();
 
-// Lote
-error LoteNotFound(uint256 loteId);
-error InvalidLoteState(uint256 loteId, LoteEstado current, LoteEstado required);
-error InvalidStateTransition(LoteEstado from, LoteEstado to);
-error LoteCreationInvalidProductor();
-error LoteCreationInvalidGramos();
-error LoteCreationInvalidPrecio();
-error LoteCreationInvalidReserva(uint16 bps);
+// KYC / compliance
+error NotKYCVerified();
+
+// Lote lifecycle
+error LoteAlreadyExists();
+error LoteNotExists();
+error LoteNotInPreventa();
+error LoteNotInCosechado();
+error LoteNotInAlmacenado();
+error LoteNotInFallido();
+error LoteAlreadyFinalized();
+error CannotFailLoteInThisState();
 
 // Compra
-error InsufficientStock(uint256 loteId, uint256 requested, uint256 available);
-error PaymentRefAlreadyUsed(bytes32 paymentRefHash);
+error KgSolicitadosExcedenSupply();
+error MontoUSDCInsuficiente();
 
 // Transfers
-error TransferP2PNoPermitido(address from, address to);
+error TransferP2PNoPermitido();
+
+// Burn / RedemptionManager
+error OnlyRedemptionCanBurn();
+error RedemptionManagerNotSet();
+error RedemptionManagerAlreadySet();
 
 // Reserva
-error ReservaTecnicaAlreadyReleased(uint256 loteId);
-
-// Quality
-error InsufficientLabsForAttestation(uint8 provided, uint8 required);
-error LabNotCertified(address lab);
-error InvalidAttestationSignature(address lab);
-error AttestationAlreadyConsumed(bytes32 digest);
-error AttestationSignaturesLengthMismatch(uint256 labs, uint256 sigs);
+error ReservaAlreadyReleased();
+error MontoNetoAlreadyReleased();
 
 // Reembolso
-error ReembolsoCompradorIndexInvalido(uint256 idx, uint256 max);
-error ReembolsoUSDCInsuficiente(uint256 needed, uint256 available);
+error ReembolsoYaEjecutado();
+error CannotRefundBlockedAddress();
+error CannotRefundRevokedAddress();
+error BatchTooLarge();
+
+// Pause (ADR-016)
+error UnauthorizedPauseActor();
 ```
+
+> **Removidos:** errores de QualityAttestation (FASE 2 — `confirmarCalidad` no existe en MVP).
 
 ### 4.10 Modifiers
 
-```solidity
-/// @notice Reverts si el account no tiene KYC tier >= MIN_KYC_TIER_PARA_COMPRAR.
-modifier onlyKYCVerified(address account);
+El contrato real no usa modifiers custom para KYC/lote — los checks están inline en cada función siguiendo el patrón Checks-Effects-Interactions. Modifiers heredados que sí se usan:
 
-/// @notice Reverts si el account no tiene el tier mínimo requerido.
-modifier onlyTier(address account, uint8 minTier);
+- `onlyRole(ROLE)` — de `AccessControlDefaultAdminRules`
+- `nonReentrant` — de `ReentrancyGuard`
+- `whenNotPaused` — de `Pausable` (ERC1155Pausable propaga a `_update`)
 
-/// @notice Reverts si el account está marcado sancionado en IdentityRegistry.
-modifier notSanctioned(address account);
-
-/// @notice Reverts si el account está marcado frozen en IdentityRegistry.
-modifier notFrozen(address account);
-
-/// @notice Reverts si el lote no está en el estado esperado.
-modifier loteInState(uint256 loteId, LoteEstado required);
-
-/// @notice Reverts si el lote no existe.
-modifier loteExists(uint256 loteId);
-```
-
-> **Nota de implementación:** `onlyKYCVerified` y `onlyTier` se implementan como llamada a `identityRegistry.checkCompliance(...)` para centralizar el chequeo.
+> **Nota:** la validación KYC en mint se realiza en `_update()` via `identityRegistry.canMint(to)`, no en un modifier separado.
 
 ### 4.11 Function signatures
 
 #### 4.11.1 Construcción y administración
 
 ```solidity
-/// @notice Inicializa el contrato con dependencias inmutables.
-/// @dev El deployer recibe DEFAULT_ADMIN_ROLE inicial; deberá transferirlo al Safe inmediatamente
-///      via `grantRole(DEFAULT_ADMIN_ROLE, safe)` + `renounceRole(...)`.
-/// @param _identityRegistry Dirección de IdentityRegistry desplegado previamente.
-/// @param _labRegistry Dirección de LabRegistry desplegado previamente.
-/// @param _usdc Dirección de USDC en la chain.
-/// @param _baseURI URI base ERC-1155 (formato `https://api.dominio/lotes/{id}.json`).
-constructor(
-    IIdentityRegistry _identityRegistry,
-    ILabRegistry _labRegistry,
-    IERC20 _usdc,
-    string memory _baseURI
-);
+/// @notice Inicializa el contrato con dependencias agrupadas en InitParams.
+/// @dev FIX M-08: admin asignado vía AccessControlDefaultAdminRules con delay de 3 días.
+///      NOTA: labRegistry removido del MVP (FASE 2 — ADR-010).
+/// @param p Struct InitParams con todos los parámetros de inicialización.
+constructor(InitParams memory p) ERC1155(p.uri) AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, p.admin);
 
-/// @notice Pausa el contrato. Bloquea mint, burn, comprar y todas las funciones de oráculo.
-/// @dev Solo COMPLIANCE_OFFICER_ROLE.
-/// @custom:security Patrón de mitigación de emergencia. No tiene timelock por diseño (ver ARQUITECTURA-TECNICA-MVP §6.3).
+/// @notice Setea el RedemptionManager (one-time, post-deploy — dependencia circular).
+/// @dev Solo DEFAULT_ADMIN_ROLE. Reverts si ya fue seteado (RedemptionManagerAlreadySet).
+/// @param newRedemptionManager Dirección del RedemptionManager desplegado.
+function setRedemptionManager(address newRedemptionManager) external;
+
+/// @notice Pausa de emergencia. Bloquea iniciarRedencion y mints vía ERC1155Pausable._update.
+/// @dev ADR-016: COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE. Emite EmergencyPaused.
 function pause() external;
 
-/// @notice Despausa el contrato.
-/// @dev Solo COMPLIANCE_OFFICER_ROLE.
+/// @notice Despausa el contrato post-incidente.
+/// @dev ADR-016: solo DEFAULT_ADMIN_ROLE. Emite EmergencyUnpaused.
 function unpause() external;
-
-/// @notice Actualiza la URI metadata específica de un lote (sobreescribe la base).
-/// @dev Solo ADMIN_ROLE.
-/// @param loteId ID del lote.
-/// @param newURI Nueva URI completa.
-function setLoteURI(uint256 loteId, string calldata newURI) external;
-
-/// @notice Devuelve la URI metadata de un token siguiendo la lógica ERC-1155.
-/// @dev Override de ERC1155.uri. Consulta `_loteURI[id]` y cae a la base si no hay override.
-function uri(uint256 id) public view override returns (string memory);
 ```
 
 #### 4.11.2 Ciclo de vida del lote
 
 ```solidity
 /// @notice Crea un nuevo lote en estado PREVENTA.
-/// @dev Solo ADMIN_ROLE. Asigna `loteId = nextLoteId++`. La reserva técnica se calcula al primer mint (no aquí).
-/// @param productor Wallet del apicultor productor (no zero, debe estar KYC tier >= 1).
-/// @param kgEsperadosTotal Kilos totales esperados del lote (gramos = kg * 1000).
-/// @param precioUSDCPorToken Precio fijo en USDC base units (6 decimales) por 1 token (= 0.5 kg).
-/// @param reservaTecnicaBps Basis points (1500-2000) que se reservan del USDC prepago.
-/// @param hashFSA SHA-256 del fact-sheet del lote.
-/// @return loteId ID asignado al nuevo lote.
-/// @custom:security Valida `reservaTecnicaBps` dentro de [RESERVA_TECNICA_BPS_MIN, RESERVA_TECNICA_BPS_MAX].
+/// @dev Solo ADMIN_ROLE.
+/// @param loteId ID único del lote (también es el ERC-1155 tokenId).
+/// @param kgEsperados Kilos totales esperados del lote.
+/// @param precioPorTokenUSDC Precio fijo en USDC base units (6 decimales) por 1 token (= 0.5 kg).
+/// @param fechaCosechaEstimada Unix timestamp estimado de cosecha.
+/// @param origenGeografico Código de 2 bytes de origen geográfico.
+/// @param productorSRL Wallet del productor SRL (no zero).
+/// @param hashFSA Hash del fact-sheet del lote.
+/// @param reservaBps Basis points (1500-2000) de reserva técnica.
+/// @param variedadMonofloral Código de variedad monofloral (uint8).
+/// @custom:security Valida reservaBps dentro de [RESERVA_TECNICA_BPS_MIN, RESERVA_TECNICA_BPS_MAX].
 function crearLote(
-    address productor,
-    uint256 kgEsperadosTotal,
-    uint256 precioUSDCPorToken,
-    uint16 reservaTecnicaBps,
-    bytes32 hashFSA
-) external returns (uint256 loteId);
+    uint256 loteId,
+    uint256 kgEsperados,
+    uint256 precioPorTokenUSDC,
+    uint64 fechaCosechaEstimada,
+    bytes2 origenGeografico,
+    address productorSRL,
+    bytes32 hashFSA,
+    uint16 reservaBps,
+    uint8 variedadMonofloral
+) external;
 
-/// @notice Mintea tokens a un comprador tras pago confirmado off-chain.
+/// @notice Mintea tokens a un comprador tras pago confirmado y USDC transferido al contrato.
 /// @dev Solo BACKEND_SIGNER_ROLE. nonReentrant + whenNotPaused.
-///      No transfiere USDC: el pago ya ocurrió en el provider (Stripe/MoonPay/Ramp/SEPA);
-///      el backend respalda con `paymentRefHash` (hash del intent + provider txid) para auditoría.
-///      Acumula `reservaTecnicaUSDCInicial` y `reservaTecnicaUSDCDisponible` proporcionalmente.
+///      Modelo escrow total: USDC debe estar en el contrato ANTES de llamar a comprar().
+///      Acumula reservaTecnicaUSDC + montoNetoPendiente en el lote.
+///      KYC validado en _update() via identityRegistry.canMint(comprador).
 /// @param loteId Lote a comprar. Debe estar en PREVENTA.
-/// @param buyer Wallet del comprador. Debe pasar KYC tier >= 1 y no estar sanctioned/frozen.
-/// @param cantidadTokens Tokens a mintear (1 token = 0.5 kg). No exceder kgEsperadosTotal en gramos.
-/// @param paymentRefHash Hash único del payment intent (anti-replay y audit trail).
+/// @param cantidadTokens Tokens a mintear (1 token = 0.5 kg). No exceder kgEsperados en gramos (FIX H-02).
+/// @param comprador Wallet del comprador.
+/// @param montoUSDCPagado Monto USDC ya transferido al contrato.
+/// @param paymentRefHash Hash del payment intent (audit trail, anti-replay off-chain).
 function comprar(
     uint256 loteId,
-    address buyer,
     uint256 cantidadTokens,
+    address comprador,
+    uint256 montoUSDCPagado,
     bytes32 paymentRefHash
 ) external;
 
-/// @notice Confirma la cosecha y transiciona el lote a COSECHADO.
-/// @dev Solo ORACLE_ROLE (Safe multi-firma). Libera la reserva técnica al productor (marca released).
-///      Si `kgCosechadoReal < kgEsperadosTotal`, el delta queda registrado para gestión off-chain
-///      (no impacta tokens minteados, que son por preventa).
-/// @param loteId Lote a confirmar.
-/// @param kgCosechadoReal Kilos efectivamente cosechados (en kg, conversion interna a gramos opcional).
-/// @param hashSenasag SHA-256 del certificado SENASAG.
-/// @param hashAnalisisLab SHA-256 del análisis lab estándar (HMF, humedad, diastasa).
+/// @notice Confirma la cosecha y transiciona a COSECHADO. Libera montoNeto al productor.
+/// @dev Solo ORACLE_ROLE. nonReentrant. FIX H-01: libera montoNetoPendiente al productor SRL.
+///      La reserva técnica permanece hasta liberarReservaTecnica().
+/// @param loteId Lote. Debe estar en PREVENTA.
+/// @param kgRealCosechado Kilos efectivamente cosechados.
+/// @param hashSenasag Hash del certificado SENASAG.
+/// @param hashAnalisisLab Hash del análisis lab estándar (HMF, humedad, diastasa).
+/// @param hashActaCosecha Hash del acta de cosecha.
+/// @param hashFotosApiario Hash de las fotos del apiario.
+/// @param hashCertificadoOrigen Hash del certificado de origen.
+/// @param tipoCertificado Tipo de certificado de origen (FORM_A, EUR_1, OTHER, NONE).
 function confirmarCosecha(
     uint256 loteId,
-    uint256 kgCosechadoReal,
+    uint256 kgRealCosechado,
     bytes32 hashSenasag,
-    bytes32 hashAnalisisLab
+    bytes32 hashAnalisisLab,
+    bytes32 hashActaCosecha,
+    bytes32 hashFotosApiario,
+    bytes32 hashCertificadoOrigen,
+    TipoCertificadoOrigen tipoCertificado
 ) external;
 
-/// @notice Confirma la attestation de calidad multi-lab y transiciona a QUALITY_ATTESTED.
-/// @dev Solo ORACLE_ROLE. Valida:
-///      1. Lote en estado COSECHADO.
-///      2. `attestation.labAddresses.length >= MIN_LABS_PARA_ATTESTATION` (2).
-///      3. `attestation.labAddresses.length == labSignatures.length == fullReportHashes.length`.
-///      4. Cada lab está activo + certificado para los tests relevantes (vía LabRegistry).
-///      5. Cada firma es válida sobre el digest del reporte correspondiente (ECDSA).
-///      6. El digest no fue consumido previamente (`_attestationConsumed[digest]`).
-///      7. Computa `isMonofloralCertified` y guarda en el lote.
-/// @param loteId Lote.
-/// @param attestation Struct completo (sin `isMonofloralCertified`: lo computa el contrato y sobreescribe).
-/// @param labSignatures Una firma ECDSA por cada lab, sobre el reportHash correspondiente.
-/// @custom:security Anti-replay vía `_attestationConsumed` indexado por keccak256 del digest combinado.
-function confirmarCalidad(
+/// @notice Confirma almacenamiento y transiciona COSECHADO → ALMACENADO.
+/// @dev Solo ORACLE_ROLE. En MVP no hay QUALITY_ATTESTED intermedio (ADR-010).
+/// @param loteId Lote. Debe estar en COSECHADO.
+/// @param hashContratoDeposito Hash del contrato de depósito.
+/// @param almacenAutorizado Dirección del almacén autorizado.
+function confirmarAlmacenamiento(
     uint256 loteId,
-    QualityAttestation calldata attestation,
-    bytes[] calldata labSignatures
+    bytes32 hashContratoDeposito,
+    address almacenAutorizado
 ) external;
 
-/// @notice Confirma almacenamiento (contrato de depósito firmado) y transiciona a ALMACENADO.
-/// @dev Solo ORACLE_ROLE. Requiere lote en QUALITY_ATTESTED.
+/// @notice Marca un lote como FALLIDO (estado terminal).
+/// @dev Solo ORACLE_ROLE. Solo permitido desde PREVENTA o COSECHADO (FIX M-05).
+///      Post-ALMACENADO requiere governance superior (reservado para futuro).
 /// @param loteId Lote.
-/// @param hashContratoDeposito SHA-256 del contrato de depósito.
-function confirmarAlmacenamiento(uint256 loteId, bytes32 hashContratoDeposito) external;
+/// @param motivo String con motivo del fallo.
+function marcarFallido(uint256 loteId, string calldata motivo) external;
 
-/// @notice Marca un lote como FALLIDO (estado terminal de excepción).
-/// @dev Solo ORACLE_ROLE. Permite reembolso pro-rata posterior vía `reembolsarLoteFallido`.
-///      Permite transición desde cualquier estado no terminal.
-/// @param loteId Lote.
-/// @param motivo String corto (e.g. "clima", "robo", "contaminacion"). Indexado off-chain.
-/// @param hashEvidencia SHA-256 del paquete de evidencia del fallo.
-function marcarFallido(uint256 loteId, string calldata motivo, bytes32 hashEvidencia) external;
-
-/// @notice Ejecuta reembolso pro-rata para compradores específicos de un lote FALLIDO.
-/// @dev Solo ORACLE_ROLE. nonReentrant.
-///      Quema los tokens de cada `buyer` listado y transfiere USDC pro-rata desde `reservaTecnicaUSDCDisponible`
-///      + balance del contrato (este último depende de funding externo via wallet TREASURY_SRL_ROLE).
-///      Procesa en batches para evitar gas limits; el caller debe iterar si la lista es larga.
+/// @notice Ejecuta reembolso pro-rata para un batch de compradores de un lote FALLIDO.
+/// @dev Solo ORACLE_ROLE. nonReentrant. Batch máximo MAX_REFUND_BATCH (100).
+///      Pool disponible = montoNetoPendiente + reservaTecnicaUSDC - reservaTecnicaLiberada.
+///      FIX H-01: reembolso 100% on-chain si el lote falla en PREVENTA (escrow total).
+///      FIX M-06: bloquea reembolso a sancionados/frozen. FIX H-01: bloquea a KYC revocados.
+///      Para lotes con más buyers, llamar múltiples veces con sub-arrays.
 /// @param loteId Lote FALLIDO.
-/// @param compradores Lista de wallets a reembolsar (no duplicados; sub-conjunto de `_compradoresPorLote`).
-/// @custom:security Validar que `_esCompradorRegistrado[loteId][buyer]` evita reembolso a non-buyers.
+/// @param compradores Lista de wallets a reembolsar (max MAX_REFUND_BATCH).
 function reembolsarLoteFallido(uint256 loteId, address[] calldata compradores) external;
+
+/// @notice Marca el reembolso de un lote como completado.
+/// @dev Solo ORACLE_ROLE. Llamar tras procesar todos los batches de reembolsarLoteFallido.
+/// @param loteId Lote FALLIDO con reembolso procesado.
+function finalizarReembolso(uint256 loteId) external;
+
+/// @notice Quema tokens del comprador delegado por RedemptionManager (única vía permitida de burn).
+/// @dev Solo callable por la dirección seteada en redemptionManager. No tiene whenNotPaused (ADR-016).
+///      Actualiza kgRedimidos. Transiciona ALMACENADO → REDENCION_PARCIAL o → AGOTADO.
+/// @param from Wallet del comprador (tokens se queman de su balance).
+/// @param loteId ID del lote.
+/// @param cantidad Tokens a quemar.
+function burnForRedemption(address from, uint256 loteId, uint256 cantidad) external;
 ```
+
+> **FASE 2 — removido del MVP:** `confirmarCalidad(loteId, QualityAttestation, bytes[])` — reservado para cuando LabRegistry esté disponible (ADR-010).
 
 #### 4.11.3 Reserva técnica
 
 ```solidity
-/// @notice Libera la reserva técnica al productor (marca released; no transfiere USDC).
-/// @dev Llamada interna desde `confirmarCosecha`. El movimiento real del USDC al productor
-///      ocurre fuera del contrato (wallet operativa Safe Wyoming → wallet productor).
-///      Emite `ReservaTecnicaLiberada` para audit trail on-chain.
+/// @notice Libera la reserva técnica al productor SRL (transfiere USDC from escrow).
+/// @dev Solo TREASURY_SRL_ROLE. nonReentrant.
+///      Permitido desde COSECHADO, ALMACENADO, REDENCION_PARCIAL o AGOTADO.
+///      NO permitido en PREVENTA (cosecha no confirmada) ni FALLIDO (la reserva va a reembolso).
+///      FIX CONFLICT-1: no requiere QUALITY_ATTESTED (estado removido del MVP).
 /// @param loteId Lote.
-function _liberarReservaTecnica(uint256 loteId) internal;
+function liberarReservaTecnica(uint256 loteId) external;
 
-/// @notice Devuelve el monto de reserva técnica todavía disponible para reembolsos.
+/// @notice Devuelve el monto de reserva técnica todavía no liberada.
 /// @param loteId Lote.
-/// @return montoUSDC Monto en USDC base units.
-function reservaDisponible(uint256 loteId) external view returns (uint256 montoUSDC);
+/// @return Monto en USDC base units (reservaTecnicaUSDC - reservaTecnicaLiberada).
+function reservaTecnicaActual(uint256 loteId) external view returns (uint256);
 ```
 
-#### 4.11.4 Hooks de redención (acoplados a RedemptionManager)
+#### 4.11.4 Burn delegado para redención (Modelo Option B — Lock Acumulator)
 
-```solidity
-/// @notice Transfiere tokens del comprador al escrow gestionado por RedemptionManager.
-/// @dev Solo callable por RedemptionManager (controlado vía AccessControl o address dedicada).
-///      No quema: la quema ocurre en `burnRedemptionTokens` cuando se confirma la exportación.
-///      Bloqueado durante pause.
-/// @param loteId Lote.
-/// @param buyer Wallet del comprador.
-/// @param cantidad Tokens.
-function lockForRedemption(uint256 loteId, address buyer, uint256 cantidad) external;
+> **Cambio arquitectónico respecto a la versión anterior de las specs:**
+> El modelo original preveía transferencia de tokens al escrow del RM (`lockForRedemption`) y
+> devolución en cancelación (`returnRedemptionTokens`). El modelo real es **Option B — Lock Acumulator**:
+> los tokens permanecen en el wallet del comprador todo el tiempo. Solo se llama a
+> `burnForRedemption` al completar la redención. `lockForRedemption`, `burnRedemptionTokens` y
+> `returnRedemptionTokens` **NO existen** en el contrato.
 
-/// @notice Quema tokens del escrow de RedemptionManager.
-/// @dev Solo callable por RedemptionManager. Marca lote como REDENCION_PARCIAL o AGOTADO.
-/// @param loteId Lote.
-/// @param cantidad Tokens a quemar.
-function burnRedemptionTokens(uint256 loteId, uint256 cantidad) external;
-
-/// @notice Devuelve tokens del escrow al buyer si la redención es cancelada.
-/// @dev Solo callable por RedemptionManager.
-function returnRedemptionTokens(uint256 loteId, address buyer, uint256 cantidad) external;
-```
-
-> **Nota de diseño:** la dirección de `RedemptionManager` se registra en `AssetVault` vía constructor (immutable) o vía rol dedicado `REDEMPTION_MANAGER_ROLE` configurado por `DEFAULT_ADMIN_ROLE` post-deploy. CONFLICT: ver sección 10.
+Ver `burnForRedemption` en §4.11.2 y la explicación completa en §6.1 (RedemptionManager).
 
 #### 4.11.5 View functions
 
 ```solidity
 /// @notice Devuelve el struct completo del lote.
 /// @param loteId Lote.
-/// @return lote Struct LoteMiel.
-function getLote(uint256 loteId) external view returns (LoteMiel memory lote);
+/// @return Struct LoteMiel.
+function lotes(uint256 loteId) external view returns (LoteMiel memory);
 
-/// @notice Devuelve el estado actual del lote.
-function getLoteEstado(uint256 loteId) external view returns (LoteEstado);
+/// @notice Devuelve kg disponibles para compra (no vendidos aún) en un lote.
+/// @dev FIX H-02: calcula en gramos internamente, retorna kg redondeando hacia abajo.
+/// @param loteId Lote.
+/// @return Kilos disponibles para compra.
+function kgDisponibles(uint256 loteId) external view returns (uint256);
 
-/// @notice Devuelve la attestation de calidad de un lote.
-function getQualityAttestation(uint256 loteId) external view returns (QualityAttestation memory);
+/// @notice Devuelve la reserva técnica no liberada todavía.
+/// @param loteId Lote.
+/// @return Monto en USDC base units.
+function reservaTecnicaActual(uint256 loteId) external view returns (uint256);
 
-/// @notice Devuelve si un lote está certificado monofloral.
-function isMonofloralCertified(uint256 loteId) external view returns (bool);
-
-/// @notice Devuelve la lista de loteIds creados (paginar off-chain).
-function getLoteIds() external view returns (uint256[] memory);
-
-/// @notice Devuelve la cantidad de tokens disponibles (no minted aún) para un lote en PREVENTA.
-/// @dev Calcula como: (kgEsperadosTotal / GRAMOS_POR_TOKEN gramos) - totalSupply(loteId).
-function tokensDisponibles(uint256 loteId) external view returns (uint256);
-
-/// @notice Devuelve la lista de compradores registrados de un lote (para reembolsos).
-/// @dev Acceso restringido a ORACLE_ROLE y COMPLIANCE_OFFICER_ROLE para privacidad.
-function getCompradoresLote(uint256 loteId) external view returns (address[] memory);
+/// @notice Devuelve el total supply de tokens de un lote (override ERC1155Supply + IAssetVault).
+/// @param id El loteId (= tokenId).
+/// @return Total tokens en circulación para ese lote.
+function totalSupply(uint256 id) external view returns (uint256);
 ```
+
+> **Removidas:** `getLoteEstado`, `getQualityAttestation`, `isMonofloralCertified`, `getLoteIds`, `tokensDisponibles`, `getCompradoresLote` — no existen en el contrato real. La información de estado se obtiene de `lotes(loteId).estado`. La certificación monofloral es FASE 2.
 
 ### 4.12 Overrides de OpenZeppelin
 
@@ -733,16 +693,12 @@ function getCompradoresLote(uint256 loteId) external view returns (address[] mem
 
 ```solidity
 /// @notice Override que combina ERC1155Supply, ERC1155Pausable y el bloqueo P2P.
-/// @dev Reglas:
-///      1. Permitir mint (from == address(0)).
-///      2. Permitir burn (to == address(0)).
-///      3. Permitir transfer hacia/desde la dirección autorizada de RedemptionManager
-///         (la lógica de redención mueve tokens al escrow y luego los quema).
-///      4. Permitir transfer hacia/desde el propio contrato si el caller tiene COMPLIANCE_OFFICER_ROLE
-///         (reservado para casos de remediación forzada documentada).
-///      5. Cualquier otra transferencia (P2P entre usuarios) revierte con TransferP2PNoPermitido.
-///      6. Validar compliance del `to` en cualquier mint: KYC tier >= 1, no sancionado, no frozen.
-///      7. Mantener `_compradoresPorLote` actualizado en mints.
+/// @dev Reglas (Modelo Option B — tokens nunca se transfieren al RM):
+///      1. Mint (from == address(0)): permitido. Valida identityRegistry.canMint(to).
+///      2. Burn (to == address(0)): permitido solo desde RedemptionManager vía burnForRedemption,
+///         o internamente en reembolsarLoteFallido.
+///      3. Cualquier otra transferencia P2P: BLOQUEADO → TransferP2PNoPermitido.
+///      NO hay ruta de transfer hacia/desde RedemptionManager como escrow (Option B).
 function _update(
     address from,
     address to,
@@ -754,50 +710,57 @@ function _update(
 #### 4.12.2 `supportsInterface`
 
 ```solidity
-/// @notice Indica interfaces ERC implementadas (ERC-1155 + AccessControl).
+/// @notice Indica interfaces ERC implementadas (ERC-1155 + AccessControlDefaultAdminRules).
+/// @dev FIX M-08: override actualizado para incluir AccessControlDefaultAdminRules.
 function supportsInterface(bytes4 interfaceId)
     public
     view
-    override(ERC1155, AccessControl)
+    override(ERC1155, AccessControlDefaultAdminRules)
     returns (bool);
 ```
 
 ### 4.13 Consideraciones de seguridad
 
 1. **Reentrancy:**
-   - Funciones que pueden gatillar callbacks ERC1155 (mint, burn) usan `nonReentrant`.
-   - `reembolsarLoteFallido` mueve USDC (external call a USDC contract) → `nonReentrant` obligatorio + checks-effects-interactions.
+   - Funciones que mueven USDC o mintean/queman tokens usan `nonReentrant`.
+   - `reembolsarLoteFallido` sigue CEI estricto: checks → effects (_burn) → interactions (safeTransfer).
 
-2. **Signature replay attacks (QualityAttestation):**
-   - Cada attestation tiene un `digest` derivado del hash del struct + loteId + chainId + dirección del contrato.
-   - `_attestationConsumed[digest] = true` antes de cualquier validación (effects-first dentro del límite seguro).
+2. **Pause asymmetry (ADR-016):**
+   - `pause()`: `COMPLIANCE_OFFICER_ROLE` OR `DEFAULT_ADMIN_ROLE` → defensa cruzada ante compromiso de un actor.
+   - `unpause()`: solo `DEFAULT_ADMIN_ROLE` (Safe 2-de-3) → un compliance officer comprometido no puede deshacer el pause.
+   - Emite `EmergencyPaused` / `EmergencyUnpaused` (además del evento Paused/Unpaused de OZ).
+   - Error: `UnauthorizedPauseActor`.
 
-3. **Access control gaps:**
-   - `DEFAULT_ADMIN_ROLE` debe transferirse al Safe inmediatamente post-deploy.
-   - `BACKEND_SIGNER_ROLE` controla mints: si se compromete, atacante puede mintear sin pago. Mitigación: rotación periódica, alertas de mints anómalos en Goldsky, capacity caps off-chain.
+3. **Access control (FIX M-08):**
+   - `DEFAULT_ADMIN_ROLE` usa `AccessControlDefaultAdminRules` con delay de 3 días para transferencias.
+   - `ADMIN_TRANSFER_DELAY = 3 days` — permite cancelar transferencias accidentales o maliciosas.
 
-4. **Integer overflow:**
-   - Solidity 0.8.24 protege por defecto.
-   - `kgCosechadoReal * GRAMOS_POR_KILO` no debe overflowar para lotes de tamaño realista (max ~10⁹ kg sigue dentro de uint256).
+4. **Escrow total (FIX H-01):**
+   - USDC del comprador ingresa al contrato en `comprar()`.
+   - `montoNetoPendiente` se libera al productor en `confirmarCosecha()`.
+   - Si el lote falla en PREVENTA: `montoNetoPendiente + reservaTecnicaUSDC` = 100% reembolsable on-chain.
+   - Si el lote falla post-COSECHADO con montoNeto ya liberado: recuperación off-chain (documentar en runbook).
 
-5. **DoS por arrays:**
-   - `_compradoresPorLote` y `_loteIds` son potencialmente grandes; ninguna función itera sobre ellos on-chain salvo `reembolsarLoteFallido` que recibe la lista por calldata (controlable en tamaño por el caller).
-   - View functions devuelven arrays; el caller debe paginar off-chain.
+5. **Overmint protection (FIX H-02):**
+   - `comprar()` valida en gramos (no kg) para evitar rounding que permitiría overmint.
+   - `gramosYaVendidos + gramosSolicitados <= lote.kgEsperados * 1000`.
 
-6. **Compliance hook bypass:**
-   - El override de `_update` es la única superficie de transfer. ERC1155 no expone otras rutas de movimiento.
+6. **Reembolso a addresses bloqueadas (FIX H-01, M-06):**
+   - `reembolsarLoteFallido` rechaza sancionados (`CannotRefundBlockedAddress`) y KYC revocados (`CannotRefundRevokedAddress`). La recuperación de esos fondos es off-chain (decisión de compliance).
 
-7. **Pausabilidad sin timelock:**
-   - Diseño deliberado: emergencias requieren respuesta inmediata. El abuso del pause queda contenido por el Safe 2-de-3 que controla `COMPLIANCE_OFFICER_ROLE` post-deploy.
+7. **Option B — no escrow de tokens:**
+   - `lockForRedemption`, `burnRedemptionTokens`, `returnRedemptionTokens` NO existen.
+   - Los tokens permanecen en el wallet del comprador hasta `burnForRedemption` en `completarRedencion`.
+   - La única vía de burn es a través del `redemptionManager` configurado o internamente (reembolsos).
 
-8. **Locking permanente:**
-   - Si la dirección de `RedemptionManager` está mal configurada, los tokens en escrow quedan locked. Mitigación: tests E2E del flujo de redención antes de mainnet + recuperación vía `pause` + migración v2.
+8. **DoS por batch:**
+   - `reembolsarLoteFallido` cap a `MAX_REFUND_BATCH = 100`. Para lotes con más compradores, llamar múltiples veces y finalizar con `finalizarReembolso`.
 
-9. **Frontrunning de `confirmarCalidad`:**
-   - El proceso requiere firmas pre-coordinadas por el Safe; no hay frontrun económico viable.
+9. **marcarFallido restringido (FIX M-05):**
+   - Solo desde PREVENTA o COSECHADO. Post-ALMACENADO el producto físico existe; los riesgos requieren governance superior (reservado para versión futura).
 
 10. **MEV en compras:**
-    - Sin riesgo material: el precio está fijo por `precioUSDCPorToken`, no hay arbitrage on-chain. El stock de tokens se atribuye en orden de llegada de la tx del backend; el backend ejecuta en serie con nonce monotónico → no hay race entre compradores on-chain.
+    - Sin riesgo material: precio fijo, mints ejecutados en serie por el backend con nonce monotónico.
 
 ---
 
@@ -815,53 +778,65 @@ El contrato **no almacena PII**: solo hashes y datos compatibles con regulación
 
 ```
 contract IdentityRegistry is
-    AccessControl
+    AccessControlDefaultAdminRules,
+    Pausable,
+    IIdentityRegistry
 ```
 
-> **Nota:** intencionalmente NO incluye `Pausable`. Pausar `IdentityRegistry` dejaría a `AssetVault` sin poder validar mints, congelando el sistema completo. El control de emergencia es a nivel `AssetVault.pause()` y desactivaciones puntuales (`freeze`).
+> **FIX H-02 / FIX M-08:** IdentityRegistry SÍ incluye `Pausable` y `AccessControlDefaultAdminRules` (delay 3 días).
+> El pause de IdentityRegistry afecta SOLO a los mutators KYC/compliance (`setKYC`, `revokeKYC`,
+> `markSanctioned`, `unmarkSanctioned`, `freezeAddress`, `unfreezeAddress`) — las views (`canMint`,
+> `canRedeem`, `isSanctioned`, etc.) NO se bloquean, así que AssetVault y RedemptionManager
+> pueden seguir validando durante un pause de emergencia del registry.
+>
+> **Asimetría ADR-016:** `pause()` = COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE.
+> `unpause()` = solo DEFAULT_ADMIN_ROLE.
 
 ### 5.3 Roles definidos
 
 | Rol | Identidad típica | Funciones que controla |
 |---|---|---|
-| `DEFAULT_ADMIN_ROLE` | Safe multi-sig 2-de-3 | Gestión de roles |
-| `ADMIN_ROLE` | Safe multi-sig 2-de-3 | Configuración general (set Plume Arc bridge address) |
-| `BACKEND_SIGNER_ROLE` | Wallet del backend (AWS KMS / GCP KMS) | `setKYC`, `markSanctioned`, `unmarkSanctioned`, `freeze`, `unfreeze`, `revokeKYC` |
-| `COMPLIANCE_OFFICER_ROLE` | Hardware wallet del compliance officer | `markSanctioned`, `unmarkSanctioned`, `freeze`, `unfreeze` (redundante con backend para emergencia) |
+| `DEFAULT_ADMIN_ROLE` | Safe multi-sig 2-de-3 | Gestión de roles, `unpause`. Con delay 3 días (FIX M-08) |
+| `BACKEND_SIGNER_ROLE` | Wallet del backend (AWS KMS / GCP KMS) | `setKYC`, `revokeKYC` |
+| `COMPLIANCE_OFFICER_ROLE` | Hardware wallet del compliance officer (titular + suplente) | `markSanctioned`, `unmarkSanctioned`, `freezeAddress`, `unfreezeAddress`, `pause` |
 
-> `ORACLE_ROLE` y `TREASURY_SRL_ROLE` **no aplican** aquí.
+> `ADMIN_ROLE`, `ORACLE_ROLE` y `TREASURY_SRL_ROLE` **no aplican** en IdentityRegistry.
+> `pause()` es accesible por `COMPLIANCE_OFFICER_ROLE` OR `DEFAULT_ADMIN_ROLE` (ADR-016).
 
 ### 5.4 Constantes
 
 ```solidity
-bytes32 public constant ADMIN_ROLE              = keccak256("ADMIN_ROLE");
 bytes32 public constant BACKEND_SIGNER_ROLE     = keccak256("BACKEND_SIGNER_ROLE");
 bytes32 public constant COMPLIANCE_OFFICER_ROLE = keccak256("COMPLIANCE_OFFICER_ROLE");
+
+/// @notice Delay para transferencias de DEFAULT_ADMIN_ROLE (FIX M-08).
+uint48 public constant ADMIN_TRANSFER_DELAY = 3 days;
 ```
 
-Re-export de `ComplianceConstants.TIER_*` y `MIN_KYC_TIER_*` (sin redeclarar).
+Referencia a `ComplianceConstants.MAX_KYC_TIER`, `MIN_KYC_TIER_PARA_COMPRAR`, `MIN_KYC_TIER_PARA_REDIMIR` sin redeclarar.
 
 ### 5.5 Structs
 
-#### 5.5.1 `IdentityData`
+#### 5.5.1 `KYCData` (antes `IdentityData`)
 
 ```solidity
-/// @notice Datos de identidad on-chain de una wallet.
-/// @dev Storage layout:
-///      slot 0 (packed): tier (1) + sanctioned (1) + frozen (1) + jurisdiction (2) +
-///                       expiresAt (8) + updatedAt (8) + revokedAt (8) = 29 bytes packed
-///      slot 1:         externalRefHash (32)
-struct IdentityData {
-    uint8  tier;             // 0=none, 1, 2, 3
+/// @notice Datos de KYC on-chain de una wallet.
+/// @dev Storage packed:
+///      slot 0: tier (1) + sanctioned (1) + frozen (1) + jurisdiction (2) +
+///              expiresAt (8) + updatedAt (8) = 21 bytes
+///      slot 1: sumsubApplicantHash (32)
+struct KYCData {
+    uint8  tier;                  // 0=none/revocado, 1=básico, 2=estándar, 3=reforzado EDD
     bool   sanctioned;
     bool   frozen;
-    bytes2 jurisdiction;     // ISO 3166-1 alpha-2 (e.g. "BO", "DE", "US")
-    uint64 expiresAt;        // unix timestamp; 0 = no expiry
-    uint64 updatedAt;        // unix timestamp del último cambio
-    uint64 revokedAt;        // unix timestamp si fue revocado; 0 si activo
-    bytes32 externalRefHash; // commitment del applicantId Sumsub (con sal del backend)
+    bytes2 jurisdiction;          // ISO 3166-1 alpha-2 (e.g. "BO", "DE", "US")
+    uint64 expiresAt;             // unix timestamp de expiración KYC
+    uint64 updatedAt;             // unix timestamp del último cambio
+    bytes32 sumsubApplicantHash;  // hash del applicantId Sumsub (audit trail off-chain)
 }
 ```
+
+> **Renombrado:** `IdentityData` → `KYCData`. Campo `revokedAt` removido (revocación se maneja poniendo `tier = 0`). Campo `externalRefHash` renombrado a `sumsubApplicantHash` para claridad.
 
 ### 5.6 Enums
 
@@ -870,163 +845,199 @@ No requeridos (los flags son `bool`, el tier es `uint8`).
 ### 5.7 State variables
 
 ```solidity
-/// @notice Storage de identidades por wallet.
-mapping(address account => IdentityData) public identities;
-
-/// @notice Dirección del bridge a Plume Arc (zero si no aplica).
-/// @dev Permite a la dirección bridgear actualizaciones desde Arc al registro.
-///      Controlada con BACKEND_SIGNER_ROLE para mantener single source flow.
-address public plumeArcBridge;
+/// @notice Storage de datos KYC por wallet.
+mapping(address => KYCData) private _kyc;
 ```
+
+> `plumeArcBridge` no existe en el contrato real (FASE 6+, fuera del MVP). El bridge se implementa como adapter separado.
 
 ### 5.8 Eventos
 
 ```solidity
 /// @notice Emitido al setear o actualizar KYC de una cuenta.
+/// @dev FIX M-03: actor indexed para forensics (qué backend signer hizo el cambio).
 event KYCUpdated(
-    address indexed account,
+    address indexed user,
+    address indexed actor,
     uint8 tier,
-    bytes2 jurisdiction,
     uint64 expiresAt,
-    bytes32 externalRefHash
+    bytes2 jurisdiction
 );
 
-/// @notice Emitido al marcar sancionado.
-event Sanctioned(address indexed account, string listSource);
+/// @notice Emitido al marcar sancionado (FIX M-01: evidenceHash mandatorio).
+event Sanctioned(
+    address indexed user,
+    address indexed actor,
+    string reason,
+    bytes32 evidenceHash,
+    uint64 timestamp
+);
 
 /// @notice Emitido al desmarcar sancionado.
-event Unsanctioned(address indexed account);
+event Unsanctioned(address indexed user, address indexed actor, string reason);
 
-/// @notice Emitido al congelar una cuenta (sin sanción, e.g. fraude pendiente investigación).
-event Frozen(address indexed account, string motivo);
+/// @notice Emitido al congelar una cuenta (FIX M-01b: orderHash mandatorio).
+event Frozen(address indexed user, address indexed actor, string regulatoryOrder, bytes32 orderHash);
 
 /// @notice Emitido al descongelar.
-event Unfrozen(address indexed account);
+event Unfrozen(address indexed user, address indexed actor, string reason);
 
-/// @notice Emitido al revocar KYC (cuenta cierra, EDD failure, etc.).
-event KYCRevoked(address indexed account, string motivo);
+/// @notice Emitido al revocar KYC.
+event KYCRevoked(address indexed user, address indexed actor, string reason);
 
-/// @notice Emitido al setear/cambiar el bridge a Plume Arc.
-event PlumeArcBridgeUpdated(address indexed previousBridge, address indexed newBridge);
+/// @notice Emitido al pausar de emergencia (FIX H-02 / ADR-016).
+event EmergencyPaused(address indexed actor, uint64 timestamp);
+
+/// @notice Emitido al despausar (FIX H-02 / ADR-016).
+event EmergencyUnpaused(address indexed actor, uint64 timestamp);
 ```
+
+> **Removido:** `PlumeArcBridgeUpdated` (bridge no existe en MVP).
 
 ### 5.9 Custom errors
 
 ```solidity
-error ZeroAddress();
-error InvalidTier(uint8 tier);
-error InvalidJurisdiction(bytes2 jurisdiction);
-error IdentityNotFound(address account);
-error IdentityAlreadySanctioned(address account);
-error IdentityNotSanctioned(address account);
-error IdentityAlreadyFrozen(address account);
-error IdentityNotFrozen(address account);
-error IdentityAlreadyRevoked(address account);
-error UnauthorizedBridge(address caller);
+error InvalidTier();
+error ExpiryInPast();
+error AlreadySanctioned();
+error NotSanctioned();
+error AlreadyFrozen();
+error NotFrozen();
+error AlreadyRevoked();
+error EmptyReason();
+error ZeroAddressUser();
+// FIX M-01: hash de evidencia mandatorio para sanciones
+error InvalidEvidenceHash();
+// FIX M-01b: hash de orden regulatoria mandatorio para freeze
+error InvalidOrderHash();
+// FIX M-04: tier=0 no se setea via setKYC (usar revokeKYC)
+error TierZeroNotAllowed();
+// FIX H-02: pause por actor sin rol adecuado
+error UnauthorizedPauseActor();
 ```
 
 ### 5.10 Modifiers
 
-```solidity
-/// @notice Permite que tanto BACKEND_SIGNER_ROLE como COMPLIANCE_OFFICER_ROLE invoquen la función.
-modifier onlySignerOrCompliance();
+El contrato real no usa modifiers custom. Modifiers heredados que sí se usan:
 
-/// @notice Permite que el caller sea el plumeArcBridge configurado o BACKEND_SIGNER_ROLE.
-modifier onlyBridgeOrSigner();
-```
+- `onlyRole(ROLE)` — de `AccessControlDefaultAdminRules`
+- `whenNotPaused` — de `Pausable` (aplicado a mutators KYC/compliance)
+
+> `onlySignerOrCompliance` y `onlyBridgeOrSigner` no existen; los checks de rol son inline o via `onlyRole`.
 
 ### 5.11 Function signatures
 
 #### 5.11.1 Construcción
 
 ```solidity
-/// @notice Inicializa con el deployer como DEFAULT_ADMIN_ROLE temporal.
-/// @dev El deployer debe transferir DEFAULT_ADMIN_ROLE al Safe post-deploy.
-constructor();
+/// @notice Inicializa con admin, backend signer y compliance officers.
+/// @dev FIX M-08: admin asignado vía AccessControlDefaultAdminRules con delay de 3 días.
+/// @param admin Dirección con DEFAULT_ADMIN_ROLE (Safe Wyoming 2-de-3).
+/// @param backendSigner Wallet del backend (HSM-managed) que sincroniza KYC.
+/// @param complianceOfficer Oficial de Cumplimiento titular.
+/// @param complianceOfficerSuplente Oficial de Cumplimiento suplente.
+constructor(
+    address admin,
+    address backendSigner,
+    address complianceOfficer,
+    address complianceOfficerSuplente
+) AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin);
 ```
 
 #### 5.11.2 Mutators
 
 ```solidity
-/// @notice Setea o actualiza KYC de una cuenta.
-/// @dev Solo BACKEND_SIGNER_ROLE o bridge Plume Arc. Sobreescribe campos no-flag (sanctioned, frozen no se tocan aquí).
-///      `revokedAt` se resetea a 0 si la cuenta es re-aprobada después de un revoke.
-/// @param account Wallet a actualizar.
-/// @param tier 0-3.
+/// @notice Setea o actualiza KYC de una cuenta (sincronización desde Sumsub).
+/// @dev Solo BACKEND_SIGNER_ROLE. whenNotPaused.
+///      FIX M-04: tier=0 no se acepta acá — usar revokeKYC para separar semánticamente.
+/// @param user Wallet a actualizar.
+/// @param tier 1-3 (no 0; usar revokeKYC para revocar).
+/// @param expiresAt Unix timestamp de expiración del KYC.
 /// @param jurisdiction ISO 3166-1 alpha-2.
-/// @param expiresAt Unix timestamp; 0 = sin expiry.
-/// @param externalRefHash Hash del applicantId Sumsub.
+/// @param sumsubApplicantHash Hash del applicantId Sumsub (audit trail off-chain).
 function setKYC(
-    address account,
+    address user,
     uint8 tier,
-    bytes2 jurisdiction,
     uint64 expiresAt,
-    bytes32 externalRefHash
+    bytes2 jurisdiction,
+    bytes32 sumsubApplicantHash
 ) external;
 
+/// @notice Revoca KYC (EDD failure, cuenta cierra). Resetea tier a 0.
+/// @dev Solo BACKEND_SIGNER_ROLE. whenNotPaused.
+function revokeKYC(address user, string calldata reason) external;
+
 /// @notice Marca cuenta como sancionada.
-/// @dev Solo BACKEND_SIGNER_ROLE o COMPLIANCE_OFFICER_ROLE.
-/// @param account Wallet.
-/// @param listSource Identificador de la lista que gatilló (e.g. "OFAC_SDN", "UN_CONSOLIDATED").
-function markSanctioned(address account, string calldata listSource) external;
+/// @dev Solo COMPLIANCE_OFFICER_ROLE. whenNotPaused.
+///      FIX M-01: evidenceHash mandatorio (no aceptamos sanciones sin documento de soporte).
+///      FIX M-03: emite actor indexed para forensics.
+/// @param user Wallet.
+/// @param reason Motivo (e.g. "OFAC_SDN_match").
+/// @param evidenceHash Hash del documento de evidencia.
+function markSanctioned(address user, string calldata reason, bytes32 evidenceHash) external;
 
 /// @notice Quita el flag sancionado (recurso, false-positive, etc.).
-/// @dev Solo COMPLIANCE_OFFICER_ROLE (decisión humana, no automatizada).
-function unmarkSanctioned(address account) external;
+/// @dev Solo COMPLIANCE_OFFICER_ROLE. whenNotPaused.
+function unmarkSanctioned(address user, string calldata reason) external;
 
-/// @notice Congela cuenta (no permite mint/transfer, sin sanción formal).
-/// @dev Solo BACKEND_SIGNER_ROLE o COMPLIANCE_OFFICER_ROLE.
-/// @param account Wallet.
-/// @param motivo String corto (e.g. "fraude_investigacion", "edd_pending").
-function freeze(address account, string calldata motivo) external;
+/// @notice Congela cuenta por orden regulatoria (sin sanción formal).
+/// @dev Solo COMPLIANCE_OFFICER_ROLE. whenNotPaused.
+///      FIX M-01b: orderHash mandatorio (no aceptamos freeze sin orden judicial/regulatoria documentada).
+/// @param user Wallet.
+/// @param regulatoryOrder Descripción de la orden.
+/// @param orderHash Hash del documento de la orden.
+function freezeAddress(address user, string calldata regulatoryOrder, bytes32 orderHash) external;
 
-/// @notice Descongela.
-/// @dev Solo COMPLIANCE_OFFICER_ROLE.
-function unfreeze(address account) external;
+/// @notice Descongela cuenta.
+/// @dev Solo COMPLIANCE_OFFICER_ROLE. whenNotPaused.
+function unfreezeAddress(address user, string calldata reason) external;
 
-/// @notice Revoca KYC (cuenta cierra o EDD failure permanente).
-/// @dev Solo COMPLIANCE_OFFICER_ROLE. Resetea tier a 0 y marca revokedAt.
-function revokeKYC(address account, string calldata motivo) external;
+/// @notice Pausa de emergencia (scope limitado a mutators).
+/// @dev FIX H-02 / ADR-016: COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE.
+///      Las views canMint/canRedeem/isSanctioned siguen funcionando durante el pause.
+function pause() external;
 
-/// @notice Setea o actualiza el bridge a Plume Arc.
-/// @dev Solo ADMIN_ROLE. Pasar address(0) desactiva el bridge.
-function setPlumeArcBridge(address newBridge) external;
+/// @notice Despausa post-incidente.
+/// @dev FIX H-02 / ADR-016: solo DEFAULT_ADMIN_ROLE.
+function unpause() external;
 ```
 
 #### 5.11.3 View functions / queries
 
 ```solidity
-/// @notice Devuelve los datos de identidad de una cuenta.
-function getIdentity(address account) external view returns (IdentityData memory);
+/// @notice Devuelve el tier actual de KYC del usuario.
+function getTier(address user) external view returns (uint8);
 
-/// @notice Devuelve el tier actual de KYC (0 si no registrada o expirada).
-/// @dev Si `expiresAt > 0 && block.timestamp > expiresAt` devuelve 0.
-function getTier(address account) external view returns (uint8);
+/// @notice Devuelve true si el usuario está sancionado.
+function isSanctioned(address user) external view returns (bool);
 
-/// @notice Helper combinado: verifica si una cuenta puede operar para un mínimo tier.
-/// @dev Reverts con error específico (no devuelve bool). Usar para enforcement directo.
-/// @param account Wallet.
-/// @param minTier Tier mínimo requerido.
-function checkCompliance(address account, uint8 minTier) external view;
+/// @notice Devuelve true si el usuario está congelado.
+function isFrozen(address user) external view returns (bool);
 
-/// @notice Versión non-reverting de checkCompliance (para uso off-chain o branching).
-/// @return ok True si pasa todas las checks.
-/// @return reason Código numérico del fallo (0=ok, 1=no kyc, 2=tier insuficiente, 3=sancionado, 4=frozen, 5=expirado, 6=revoked).
-function isCompliant(address account, uint8 minTier)
-    external
-    view
-    returns (bool ok, uint8 reason);
+/// @notice Devuelve true si el KYC del usuario está expirado.
+function isExpired(address user) external view returns (bool);
 
-/// @notice Devuelve true si la cuenta está sancionada.
-function isSanctioned(address account) external view returns (bool);
+/// @notice Devuelve true si el usuario puede recibir un mint (tier >= 1, no sancionado, no frozen, no expirado).
+/// @dev Llamado por AssetVault._update() en mints. Views no bloqueadas por pause.
+function canMint(address user) external view returns (bool);
 
-/// @notice Devuelve true si la cuenta está congelada.
-function isFrozen(address account) external view returns (bool);
+/// @notice Devuelve true si el usuario puede iniciar una redención (tier >= 2, no sancionado, no frozen, no expirado).
+/// @dev Llamado por RedemptionManager.iniciarRedencion(). Views no bloqueadas por pause.
+function canRedeem(address user) external view returns (bool);
+
+/// @notice Devuelve la jurisdicción ISO del usuario.
+function getJurisdiction(address user) external view returns (bytes2);
+
+/// @notice Devuelve el struct completo de datos KYC de un usuario.
+function getKYCData(address user) external view returns (KYCData memory);
 ```
+
+> **Removidas:** `checkCompliance`, `isCompliant`, `getIdentity` — no existen en el contrato real.
+> El equivalente funcional son `canMint(user)` y `canRedeem(user)`, que ya combinan tier + sanctioned + frozen + expiry.
 
 ### 5.12 Overrides
 
-No requiere overrides custom de OpenZeppelin (solo hereda `AccessControl`).
+No requiere overrides custom de OpenZeppelin. La combinación `AccessControlDefaultAdminRules + Pausable` no presenta conflictos C3.
 
 ### 5.13 Consideraciones de seguridad
 
@@ -1047,11 +1058,12 @@ No requiere overrides custom de OpenZeppelin (solo hereda `AccessControl`).
    - `getTier` devuelve 0 si expirado. `checkCompliance` lo refleja con `reason = 5`.
    - El backend debe re-aprobar antes del expiry para evitar congelamiento de operación al usuario.
 
-6. **Sin `pause`:**
-   - Diseño deliberado. Para detener emisiones de tokens ante incidente, pausar `AssetVault` (no este contrato).
+6. **Pause de emergencia (FIX H-02 / ADR-016):**
+   - `pause()` bloquea solo mutators (setKYC, revokeKYC, markSanctioned, etc.). Las views `canMint` / `canRedeem` / `isSanctioned` / `isFrozen` siguen funcionando para no bloquear AssetVault y RedemptionManager.
+   - Asimetría: `pause()` = COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE; `unpause()` = solo DEFAULT_ADMIN_ROLE.
 
-7. **Revocación irreversible parcial:**
-   - `revokeKYC` resetea tier a 0; re-aprobación posterior requiere nueva llamada `setKYC` con datos frescos. `revokedAt` queda como audit trail.
+7. **Revocación semántica (FIX M-04):**
+   - `setKYC` rechaza tier=0 (`TierZeroNotAllowed`). La revocación usa `revokeKYC` separado, diferenciando "nunca verificado" de "fue verificado y revocado". Re-aprobación requiere nueva llamada a `setKYC` con datos frescos.
 
 ---
 
@@ -1059,54 +1071,74 @@ No requiere overrides custom de OpenZeppelin (solo hereda `AccessControl`).
 
 ### 6.1 Propósito
 
-`RedemptionManager` encapsula el flujo de redención física: el usuario solicita retirar miel física, sus tokens quedan en escrow (transferidos al contrato vía `AssetVault.lockForRedemption`), el operador SRL coordina la exportación off-chain (Aduana, DUE, BL/AWB), y al confirmar la exportación el oráculo Safe gatilla la quema definitiva (`AssetVault.burnRedemptionTokens`). Si la redención se cancela antes de la quema, los tokens regresan al usuario (`AssetVault.returnRedemptionTokens`).
+`RedemptionManager` encapsula el flujo de redención física en 2 fases (ADR-017):
 
-El contrato mantiene el estado de cada redención (`Redencion`) con sus hashes documentales (datos de envío, DUE, BL/AWB) para audit trail on-chain. **No mueve USDC** (los tokens son la única unidad de valor en este flujo; el comprador ya pagó al mint).
+1. **`iniciarRedencion`** — el comprador (tier >= 2) registra la intención de redimir tokens. Los tokens NO se transfieren. Se registra un lock lógico contable en `_tokensLockedFor[loteId][comprador]`. Invariante crítica: `_tokensLockedFor[loteId][buyer] <= IERC1155(assetVault).balanceOf(buyer, loteId)`.
+2. **`confirmarExportacion`** — Oracle registra el DUE (INICIADA → EN_EXPORTACION). NO quema tokens aún.
+3. **`completarRedencion`** — Oracle recibe BL/AWB. Quema tokens vía `assetVault.burnForRedemption` (EN_EXPORTACION → COMPLETADA).
+4. (alternativa) **`cancelarRedencion`** — libera el lock contable sin quemar. INICIADA o EN_EXPORTACION → CANCELADA.
+
+**Modelo Option B — Lock Acumulator:** los tokens permanecen en el wallet del comprador todo el tiempo. El lock es contable — `_tokensLockedFor` previene la doble-redencion sin requerir transfers al escrow. Las funciones `lockForRedemption`, `burnRedemptionTokens` y `returnRedemptionTokens` **NO existen**.
+
+El contrato **no mueve USDC**.
 
 ### 6.2 Herencias OpenZeppelin (orden C3)
 
 ```
 contract RedemptionManager is
-    AccessControl,
+    AccessControlDefaultAdminRules,
+    ReentrancyGuard,
     Pausable,
-    ReentrancyGuard
+    IRedemptionManager
 ```
 
-- `Pausable` se incluye para detener nuevas redenciones ante incidente (e.g. discrepancia entre estado on-chain y stock físico). Las redenciones ya iniciadas pueden ser canceladas manualmente o esperar el unpause.
-- `ReentrancyGuard` por las llamadas a `AssetVault` (external calls).
+- `AccessControlDefaultAdminRules` (FIX M-08): delay de 3 días para transferencias de DEFAULT_ADMIN_ROLE. Constante `ADMIN_TRANSFER_DELAY = 3 days`.
+- `Pausable`: solo bloquea `iniciarRedencion` (whenNotPaused). `confirmarExportacion`, `completarRedencion` y `cancelarRedencion` NO usan whenNotPaused — las operaciones en curso deben poder resolverse durante un incidente (§6.13.8).
+- `ReentrancyGuard`: `iniciarRedencion` y `completarRedencion` son nonReentrant (external call a AssetVault).
 
 ### 6.3 Roles definidos
 
 | Rol | Identidad típica | Funciones que controla |
 |---|---|---|
-| `DEFAULT_ADMIN_ROLE` | Safe multi-sig 2-de-3 | Gestión de roles |
-| `ADMIN_ROLE` | Safe multi-sig 2-de-3 | Configuración general |
-| `BACKEND_SIGNER_ROLE` | Wallet backend | `iniciarRedencion` (en nombre del usuario, signed UX) |
-| `COMPLIANCE_OFFICER_ROLE` | Compliance officer | `pause`, `unpause`, `cancelarRedencion` por compliance |
-| `ORACLE_ROLE` | Safe multi-sig 2-de-3 | `confirmarExportacion`, `cancelarRedencion` por logística |
+| `DEFAULT_ADMIN_ROLE` | Safe multi-sig 2-de-3 | Gestión de roles, `unpause`. Con delay 3 días (FIX M-08) |
+| `COMPLIANCE_OFFICER_ROLE` | Compliance officer (titular + suplente) | `cancelarRedencion` siempre, `pause` (junto con DEFAULT_ADMIN_ROLE — ADR-016) |
+| `ORACLE_ROLE` | Safe multi-sig 2-de-3 | `confirmarExportacion`, `completarRedencion`, `cancelarRedencion` siempre |
+
+> `ADMIN_ROLE` y `BACKEND_SIGNER_ROLE` **no aplican** en RedemptionManager.
+> `iniciarRedencion` es llamada directamente por el comprador (`msg.sender`) — no requiere rol.
+> **ADR-016 pause asymmetry:** `pause()` = COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE. `unpause()` = solo DEFAULT_ADMIN_ROLE.
 
 ### 6.4 Constantes
 
 ```solidity
-bytes32 public constant ADMIN_ROLE              = keccak256("ADMIN_ROLE");
-bytes32 public constant BACKEND_SIGNER_ROLE     = keccak256("BACKEND_SIGNER_ROLE");
-bytes32 public constant COMPLIANCE_OFFICER_ROLE = keccak256("COMPLIANCE_OFFICER_ROLE");
 bytes32 public constant ORACLE_ROLE             = keccak256("ORACLE_ROLE");
+bytes32 public constant COMPLIANCE_OFFICER_ROLE = keccak256("COMPLIANCE_OFFICER_ROLE");
+
+/// @notice Delay para transferencias de DEFAULT_ADMIN_ROLE (FIX M-08).
+uint48 public constant ADMIN_TRANSFER_DELAY = 3 days;
+
+/// @notice Longitud máxima del número DUE en caracteres.
+uint256 public constant MAX_DUE_NUMERO_LENGTH = 64;
+
+/// @notice Tiempo tras el cual el comprador puede self-cancelar una redención stuck (ADR-015).
+/// @dev 60 días balancea export-time Bolivia→UE (30-45d + margen) con consumer protection.
+///      Cierra findings RM-06 + RM-07 (HIGH) del audit.
+uint256 public constant REDENCION_TIMEOUT = 60 days;
 ```
 
 ### 6.5 Enums
 
 ```solidity
-/// @notice Estados de una redención.
-/// @dev Transiciones válidas:
+/// @notice Estados del ciclo de redención.
+/// @dev Transiciones válidas (ADR-017):
 ///      INICIADA → EN_EXPORTACION → COMPLETADA
-///      INICIADA → CANCELADA
-///      EN_EXPORTACION → CANCELADA (excepcionalmente, por compliance officer)
+///      INICIADA → CANCELADA (por Oracle, Compliance o buyer post-timeout)
+///      EN_EXPORTACION → CANCELADA (por Oracle o Compliance — ADR-017 checkpoint operacional)
 enum EstadoRedencion {
-    INICIADA,         // 0 - tokens en escrow
-    EN_EXPORTACION,   // 1 - DUE emitida
-    COMPLETADA,       // 2 - tokens quemados (terminal)
-    CANCELADA         // 3 - tokens devueltos (terminal)
+    INICIADA,         // 0 - lock contable registrado; tokens en wallet del comprador
+    EN_EXPORTACION,   // 1 - DUE emitida; burn pendiente
+    COMPLETADA,       // 2 - tokens quemados via burnForRedemption (terminal)
+    CANCELADA         // 3 - lock liberado, sin burn (terminal)
 }
 ```
 
@@ -1116,31 +1148,23 @@ enum EstadoRedencion {
 
 ```solidity
 /// @notice Datos de una redención individual.
-/// @dev Storage layout:
-///      slot 0:  redemptionId (32)
-///      slot 1:  loteId (32)
-///      slot 2 (packed): buyer (20) + estado (1) + ... padding
-///      slot 3:  cantidadTokens (32)
-///      slot 4:  hashDatosEnvio (32)
-///      slot 5:  hashDUE (32)
-///      slot 6:  hashBLAWB (32)
-///      slot 7 (packed): iniciadaAt (8) + exportadaAt (8) + completadaAt (8) + canceladaAt (8) = 32 bytes
 struct Redencion {
-    uint256 redemptionId;
+    address comprador;          // wallet del comprador (quien inicia la redención)
     uint256 loteId;
-    address buyer;             // 20 bytes
-    EstadoRedencion estado;    // 1 byte
-    // 11 bytes libres en slot 2
     uint256 cantidadTokens;
-    bytes32 hashDatosEnvio;
-    bytes32 hashDUE;
-    bytes32 hashBLAWB;
-    uint64 iniciadaAt;
-    uint64 exportadaAt;
-    uint64 completadaAt;
-    uint64 canceladaAt;
+    bytes32 datosEnvioHash;     // hash de datos de envío (dirección, contacto, instrucciones)
+    EstadoRedencion estado;
+    string dueNumero;           // número DUE (Declaración Única de Exportación) — max 64 chars
+    bytes32 hashBLAWB;          // hash del Bill of Lading o Air Waybill
+    uint64 createdAt;
+    uint64 completedAt;
+    bytes32 cancelReason;       // motivo de cancelación (bytes32, no string)
 }
 ```
+
+> **Removido respecto a la versión anterior:** `redemptionId` (se almacena como clave del mapping, no en el struct), `hashDUE` (reemplazado por `dueNumero` string — ADR-017), `exportadaAt` / `canceladaAt` (consolidados en `completedAt`). `buyer` renombrado a `comprador`.
+>
+> **ADR-017:** `hashDUE` no existe. El número DUE se almacena como `string dueNumero` (número legible de aduana). El hash BL/AWB llega en `completarRedencion`.
 
 ### 6.7 State variables
 
@@ -1151,197 +1175,244 @@ IAssetVault public immutable assetVault;
 /// @notice Dirección de IdentityRegistry (immutable).
 IIdentityRegistry public immutable identityRegistry;
 
-/// @notice Storage de redenciones por ID.
-mapping(uint256 redemptionId => Redencion) public redenciones;
+/// @notice Storage de redenciones por ID (privado, acceso via getRedencion).
+mapping(uint256 => Redencion) private _redenciones;
 
-/// @notice Lista de redemptionIds por buyer (para enumeración off-chain).
-mapping(address buyer => uint256[]) private _redencionesPorBuyer;
+/// @notice Próximo ID de redención a asignar (comienza en 1).
+uint256 private _nextRedencionId;
 
-/// @notice Lista de redemptionIds por lote (para enumeración off-chain).
-mapping(uint256 loteId => uint256[]) private _redencionesPorLote;
-
-/// @notice Counter monotónico.
-uint256 public nextRedemptionId;
+/// @notice Acumulador de tokens lockeados lógicamente por loteId y comprador (Modelo Option B).
+/// @dev Invariante: _tokensLockedFor[loteId][buyer] <= IERC1155(assetVault).balanceOf(buyer, loteId).
+///      Incrementa en iniciarRedencion. Decrementa en completarRedencion / cancelarRedencion.
+mapping(uint256 loteId => mapping(address buyer => uint256)) private _tokensLockedFor;
 ```
 
 ### 6.8 Eventos
 
 ```solidity
 event RedencionIniciada(
-    uint256 indexed redemptionId,
+    uint256 indexed redencionId,
+    address indexed comprador,
     uint256 indexed loteId,
-    address indexed buyer,
     uint256 cantidadTokens,
-    bytes32 hashDatosEnvio
+    bytes32 datosEnvioHash
 );
 
+/// @dev ADR-017: actor indexed para forensics (qué Safe signer registró el DUE).
 event RedencionEnExportacion(
-    uint256 indexed redemptionId,
-    string dueNumero,           // referencia legible Aduana
-    bytes32 hashDUE
+    uint256 indexed redencionId,
+    address indexed actor,
+    string dueNumero            // número DUE legible (max 64 chars); NO hashDUE
 );
 
+/// @dev ADR-017: actor indexed para forensics.
 event RedencionCompletada(
-    uint256 indexed redemptionId,
+    uint256 indexed redencionId,
+    address indexed actor,
     bytes32 hashBLAWB
 );
 
+/// @dev actor indexed para forensics (Oracle, Compliance, o buyer post-timeout).
 event RedencionCancelada(
-    uint256 indexed redemptionId,
-    string motivo
+    uint256 indexed redencionId,
+    address indexed actor,
+    bytes32 reason              // bytes32, no string
 );
+
+/// @notice Emitido al pausar de emergencia (ADR-016).
+event EmergencyPaused(address indexed actor, uint64 timestamp);
+
+/// @notice Emitido al despausar (ADR-016).
+event EmergencyUnpaused(address indexed actor, uint64 timestamp);
 ```
 
 ### 6.9 Custom errors
 
 ```solidity
 error ZeroAddress();
-error ZeroAmount();
-error RedencionNotFound(uint256 redemptionId);
-error InvalidRedencionState(uint256 redemptionId, EstadoRedencion current, EstadoRedencion required);
-error InvalidStateTransition(EstadoRedencion from, EstadoRedencion to);
-error InsufficientTokenBalance(address buyer, uint256 loteId, uint256 needed, uint256 available);
-error LoteNotRedeemable(uint256 loteId); // lote no está en ALMACENADO/REDENCION_PARCIAL
-error NotKYCVerified(address account);
-error InsufficientKYCTier(address account, uint8 currentTier, uint8 requiredTier);
-error AddressSanctioned(address account);
-error AddressFrozen(address account);
-error CallerNotRedemptionOwner(address caller, address owner);
+error CannotRedeem();               // identityRegistry.canRedeem devolvió false (tier, sancionado, frozen, expirado)
+error LoteNotFound(uint256 loteId); // lote no existe (productorSRL == address(0))
+error LoteNotInAlmacenado();        // lote no está en ALMACENADO ni REDENCION_PARCIAL
+error CantidadCero();
+error CantidadExcedeSupply();       // defensa-in-depth vs totalSupply (RM-19)
+error BalanceInsuficiente();        // available balance (balance - locked) < cantidadTokens
+error OnlyAuthorizedCanceler();     // no es Oracle, Compliance, ni buyer-after-timeout
+error UnauthorizedPauseActor();     // pause() por caller sin rol adecuado (ADR-016)
+error NotInExportacion();           // completarRedencion cuando estado != EN_EXPORTACION
+error InvalidHash();                // datosEnvioHash o hashBLAWB == bytes32(0)
+error RedencionNotIniciada();       // comprador == address(0) en la redencion
+error RedencionAlreadyFinalized();  // estado ya es COMPLETADA o CANCELADA (o no es INICIADA para confirmar)
+error EmptyDUE();
+error DUENumeroTooLong();           // dueNumero.length > MAX_DUE_NUMERO_LENGTH (64)
+error EmptyReason();                // reason == bytes32(0) en cancelarRedencion
 ```
 
 ### 6.10 Modifiers
 
-```solidity
-/// @notice Reverts si el buyer no es tier >= 2.
-modifier onlyTierForRedemption(address buyer);
+El contrato real no usa modifiers custom para KYC/estado. Modifiers heredados que sí se usan:
 
-/// @notice Reverts si la redención no existe.
-modifier redencionExists(uint256 redemptionId);
-
-/// @notice Reverts si la redención no está en el estado requerido.
-modifier redencionInState(uint256 redemptionId, EstadoRedencion required);
-```
+- `onlyRole(ROLE)` — de `AccessControlDefaultAdminRules`
+- `nonReentrant` — de `ReentrancyGuard` (en `iniciarRedencion`, `completarRedencion`, `cancelarRedencion`)
+- `whenNotPaused` — de `Pausable` (solo en `iniciarRedencion`)
 
 ### 6.11 Function signatures
 
 #### 6.11.1 Construcción
 
 ```solidity
-/// @notice Inicializa con AssetVault e IdentityRegistry.
-/// @param _assetVault Dirección de AssetVault.
-/// @param _identityRegistry Dirección de IdentityRegistry.
-constructor(IAssetVault _assetVault, IIdentityRegistry _identityRegistry);
+/// @notice Inicializa con dependencias y roles operativos.
+/// @dev FIX M-08: admin asignado vía AccessControlDefaultAdminRules con delay de 3 días.
+/// @param admin DEFAULT_ADMIN_ROLE (Safe Wyoming 2-de-3).
+/// @param oracleSafe Recibe ORACLE_ROLE.
+/// @param complianceOfficer Recibe COMPLIANCE_OFFICER_ROLE.
+/// @param complianceOfficerSuplente Recibe COMPLIANCE_OFFICER_ROLE.
+/// @param _assetVault Dirección de AssetVault (immutable).
+/// @param _identityRegistry Dirección de IdentityRegistry (immutable).
+constructor(
+    address admin,
+    address oracleSafe,
+    address complianceOfficer,
+    address complianceOfficerSuplente,
+    IAssetVault _assetVault,
+    IIdentityRegistry _identityRegistry
+) AccessControlDefaultAdminRules(ADMIN_TRANSFER_DELAY, admin);
 ```
 
 #### 6.11.2 Mutators
 
 ```solidity
-/// @notice Inicia una redención. Transfiere tokens al escrow (AssetVault.lockForRedemption).
-/// @dev nonReentrant + whenNotPaused. Solo BACKEND_SIGNER_ROLE (UX abstraída: el backend firma en nombre del user
-///      tras validar todos los checks en API).
-///      Reglas:
-///      - Lote en estado ALMACENADO o REDENCION_PARCIAL.
-///      - buyer KYC tier >= 2, no sancionado, no frozen.
-///      - buyer tiene balance suficiente del loteId en AssetVault.
-///      - cantidadTokens > 0.
-/// @param loteId Lote a redimir.
-/// @param buyer Wallet del comprador.
-/// @param cantidadTokens Tokens a redimir.
-/// @param hashDatosEnvio SHA-256 de los datos de envío (dirección, contacto, instrucciones).
-/// @return redemptionId ID asignado.
+/// @notice Inicia una redención registrando un lock contable (Modelo Option B).
+/// @dev nonReentrant + whenNotPaused. Llamado directamente por el comprador (msg.sender).
+///      NO requiere BACKEND_SIGNER_ROLE — el comprador firma la tx directamente.
+///      Checks: canRedeem(msg.sender), cantidadTokens > 0, datosEnvioHash != 0,
+///              lote existe, lote en ALMACENADO o REDENCION_PARCIAL,
+///              availableBalance >= cantidadTokens.
+///      Effects: incrementa _tokensLockedFor[loteId][msg.sender] + crea Redencion INICIADA.
+///      NO transfiere tokens (Modelo Option B).
+/// @param loteId Lote a redimir. Debe estar en ALMACENADO o REDENCION_PARCIAL.
+/// @param cantidadTokens Tokens a redimir. Debe ser > 0 y <= availableBalance(msg.sender, loteId).
+/// @param datosEnvioHash Hash de los datos de envío.
+/// @return redencionId ID asignado a la nueva redención.
 function iniciarRedencion(
     uint256 loteId,
-    address buyer,
     uint256 cantidadTokens,
-    bytes32 hashDatosEnvio
-) external returns (uint256 redemptionId);
+    bytes32 datosEnvioHash
+) external returns (uint256 redencionId);
 
-/// @notice Confirma que la exportación está en curso (DUE emitida).
-/// @dev Solo ORACLE_ROLE. Transición INICIADA → EN_EXPORTACION.
-/// @param redemptionId ID de la redención.
-/// @param dueNumero Referencia legible de Aduana (para audit trail human-readable).
-/// @param hashDUE SHA-256 del documento DUE.
-function confirmarExportacion(
-    uint256 redemptionId,
-    string calldata dueNumero,
-    bytes32 hashDUE
-) external;
+/// @notice Registra la emisión del DUE (fase 1 de 2 — ADR-017).
+/// @dev Solo ORACLE_ROLE. NO usa whenNotPaused.
+///      Transición INICIADA → EN_EXPORTACION. NO quema tokens todavía.
+/// @param redencionId ID de la redención.
+/// @param dueNumero Número DUE (Declaración Única de Exportación), max 64 chars.
+function confirmarExportacion(uint256 redencionId, string calldata dueNumero) external;
 
-/// @notice Confirma entrega final. Quema los tokens en escrow definitivamente.
-/// @dev Solo ORACLE_ROLE. nonReentrant. Transición EN_EXPORTACION → COMPLETADA.
-///      Llama a AssetVault.burnRedemptionTokens.
-/// @param redemptionId ID.
-/// @param hashBLAWB SHA-256 del Bill of Lading / Airway Bill.
-function completarRedencion(uint256 redemptionId, bytes32 hashBLAWB) external;
+/// @notice Completa la redención al recibir BL/AWB — quema tokens del comprador (fase 2 de 2 — ADR-017).
+/// @dev Solo ORACLE_ROLE. nonReentrant. NO usa whenNotPaused.
+///      Transición EN_EXPORTACION → COMPLETADA.
+///      Decrementa _tokensLockedFor y llama assetVault.burnForRedemption(comprador, loteId, cantidad).
+/// @param redencionId ID de la redención (debe estar en EN_EXPORTACION).
+/// @param hashBLAWB Hash del Bill of Lading o Air Waybill.
+function completarRedencion(uint256 redencionId, bytes32 hashBLAWB) external;
 
-/// @notice Cancela una redención y devuelve los tokens al buyer.
-/// @dev Solo ORACLE_ROLE o COMPLIANCE_OFFICER_ROLE. nonReentrant.
-///      Transición INICIADA → CANCELADA (común).
-///      Transición EN_EXPORTACION → CANCELADA (excepcional, requiere documentar motivo).
-///      Llama a AssetVault.returnRedemptionTokens.
-/// @param redemptionId ID.
-/// @param motivo String corto.
-function cancelarRedencion(uint256 redemptionId, string calldata motivo) external;
+/// @notice Cancela una redención en curso, liberando el lock contable (ADR-015).
+/// @dev nonReentrant. NO usa whenNotPaused. NO requiere onlyRole — access control inline:
+///      - ORACLE_ROLE: siempre puede cancelar.
+///      - COMPLIANCE_OFFICER_ROLE: siempre puede cancelar (motivos regulatorios).
+///      - msg.sender == comprador && block.timestamp >= createdAt + REDENCION_TIMEOUT: escape valve (RM-06).
+///      Cancellable desde INICIADA o EN_EXPORTACION (ADR-017).
+///      Decrementa _tokensLockedFor. NO quema tokens.
+/// @param redencionId ID.
+/// @param reason Hash del motivo de cancelación (bytes32). No puede ser bytes32(0).
+function cancelarRedencion(uint256 redencionId, bytes32 reason) external;
 
-/// @notice Pausa nuevas redenciones (las en curso continúan via oracle).
+/// @notice Pausa de emergencia. Bloquea únicamente iniciarRedencion.
+/// @dev ADR-016: COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE. Emite EmergencyPaused.
+///      confirmarExportacion, completarRedencion y cancelarRedencion NO se bloquean.
 function pause() external;
 
-/// @notice Despausa.
+/// @notice Despausa post-incidente.
+/// @dev ADR-016: solo DEFAULT_ADMIN_ROLE. Emite EmergencyUnpaused.
 function unpause() external;
 ```
 
 #### 6.11.3 View functions
 
 ```solidity
-/// @notice Devuelve los datos completos de una redención.
-function getRedencion(uint256 redemptionId) external view returns (Redencion memory);
+/// @notice Devuelve el struct completo de una redención.
+function getRedencion(uint256 redencionId) external view returns (Redencion memory);
 
-/// @notice Devuelve el estado de una redención.
-function getEstadoRedencion(uint256 redemptionId) external view returns (EstadoRedencion);
+/// @notice Devuelve el próximo ID de redención a asignar.
+function getNextRedencionId() external view returns (uint256);
 
-/// @notice Devuelve la lista de redemptionIds de un buyer.
-function getRedencionesByBuyer(address buyer) external view returns (uint256[] memory);
+/// @notice Devuelve el balance disponible del comprador para nuevas redenciones.
+/// @dev Calcula: balanceOf(buyer, loteId) - _tokensLockedFor[loteId][buyer].
+/// @param buyer Wallet del comprador.
+/// @param loteId ID del lote.
+/// @return Tokens disponibles para iniciar nuevas redenciones.
+function availableBalance(address buyer, uint256 loteId) external view returns (uint256);
 
-/// @notice Devuelve la lista de redemptionIds de un lote.
-function getRedencionesByLote(uint256 loteId) external view returns (uint256[] memory);
+/// @notice Devuelve la cantidad de tokens lockeados de un comprador para un lote.
+/// @dev Valor > 0 mientras haya redenciones en estado INICIADA activas.
+/// @param buyer Wallet del comprador.
+/// @param loteId ID del lote.
+/// @return Tokens actualmente lockeados.
+function tokensLockedFor(address buyer, uint256 loteId) external view returns (uint256);
 ```
+
+> **Removidas:** `getEstadoRedencion`, `getRedencionesByBuyer`, `getRedencionesByLote` — no existen en el contrato real. El estado se obtiene de `getRedencion(id).estado`.
 
 ### 6.12 Overrides
 
-No requiere overrides custom (combinación `AccessControl + Pausable + ReentrancyGuard` no presenta conflictos C3).
+No requiere overrides custom (`AccessControlDefaultAdminRules + ReentrancyGuard + Pausable` no presenta conflictos C3).
 
 ### 6.13 Consideraciones de seguridad
 
-1. **Reentrancy:** `iniciarRedencion`, `completarRedencion`, `cancelarRedencion` llaman a `AssetVault` (external). `nonReentrant` + checks-effects-interactions.
+1. **Reentrancy (Modelo Option B):**
+   - `iniciarRedencion`: nonReentrant (aunque en Option B no hay external calls mutantes post-effects, se mantiene por defense-in-depth).
+   - `completarRedencion`: nonReentrant + CEI estricto — decrementar _tokensLockedFor ANTES del burn (external call).
+   - `cancelarRedencion`: nonReentrant por defense-in-depth (RM-14).
 
-2. **Escrow consistency:**
-   - El contrato delega el balance ERC-1155 a `AssetVault` (no es self-custody). La integridad depende de que `AssetVault.lockForRedemption` solo sea callable por este contrato.
-   - **Invariant:** `sum(redenciones[id].cantidadTokens for INICIADA/EN_EXPORTACION) == AssetVault.balanceOf(address(this), loteId)` para cada loteId.
+2. **Lock acumulator invariante:**
+   - `_tokensLockedFor[loteId][buyer] <= IERC1155(assetVault).balanceOf(buyer, loteId)` garantizado en `iniciarRedencion`.
+   - `availableBalance` expone el balance disponible para nuevas redenciones.
 
-3. **State transitions:** Validar transición exacta en cada mutator. Tests de invariantes en Foundry para cubrir transiciones inválidas.
+3. **State transitions:**
+   - Transiciones validadas inline en cada mutator con errores específicos.
+   - `cancelarRedencion` acepta INICIADA o EN_EXPORTACION (ADR-017: checkpoint operacional).
 
-4. **DoS por buyer/lote arrays:**
-   - `_redencionesPorBuyer` y `_redencionesPorLote` solo se appendean (nunca iteran on-chain).
+4. **Timeout escape valve (ADR-015 / RM-06+07):**
+   - El comprador puede auto-cancelar tras `REDENCION_TIMEOUT = 60 días` si el Oracle Safe desaparece.
+   - Protección para consumer ante lockout permanente del lock contable.
 
-5. **Cancelación post-exportación:**
-   - Permitida pero costosa (logísticamente). Caller debe documentar via `motivo`. El backend debe propagar la cancelación al sistema de tracking off-chain.
+5. **Cancelación post-exportación (ADR-017):**
+   - Permitida desde EN_EXPORTACION por Oracle o Compliance (si goods se detienen en aduana post-DUE).
+   - El backend debe propagar la cancelación al sistema de tracking off-chain.
 
-6. **Validación KYC en cancelar/completar:**
-   - **No revalidar KYC** en `completarRedencion` o `cancelarRedencion`. Si el usuario perdió KYC entre el inicio y el final, la operación debe seguir (ya no se puede revertir el envío físico). El compliance officer puede congelar la cuenta receptora si aplica, pero no bloquear la finalización.
+6. **No revalidar KYC en completar/cancelar:**
+   - La validación KYC solo ocurre en `iniciarRedencion`. Un envío físico ya en curso no puede revertirse por pérdida de KYC posterior.
 
-7. **Race condition compra vs redención:**
-   - El balance del usuario en AssetVault se valida en `iniciarRedencion` antes del `lockForRedemption`. Si entre validación y lock el balance cambia (no debería en práctica porque no hay P2P), la llamada falla en `lockForRedemption`.
+7. **Pause asymmetry (ADR-016):**
+   - `pause()` bloquea solo `iniciarRedencion` (whenNotPaused).
+   - `confirmarExportacion`, `completarRedencion` y `cancelarRedencion` NO usan whenNotPaused — las redenciones en curso deben poder resolverse durante un incidente.
+   - `pause()` = COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE.
+   - `unpause()` = solo DEFAULT_ADMIN_ROLE.
 
-8. **Pausabilidad:**
-   - Pausar bloquea solo `iniciarRedencion`. `completarRedencion` y `cancelarRedencion` siempre disponibles para el oracle (necesarias para resolver redenciones en curso ante incidente).
+8. **§6.13.8 — Funciones NO bloqueadas por pause:**
+   - `confirmarExportacion`, `completarRedencion`, `cancelarRedencion`.
+   - Diseño deliberado: el Oracle Safe es responsable de no confirmar exportaciones durante un incidente que afecte la cadena de custodia física.
 
 ---
 
-## 7. Contrato 4: `LabRegistry.sol`
+## 7. FASE 2 — `LabRegistry.sol` (reservado, ADR-010)
 
-### 7.1 Propósito
+> **NO ES PARTE DEL MVP.** LabRegistry y todo lo relativo a QualityAttestation (`confirmarCalidad`,
+> el estado `QUALITY_ATTESTED`, la dependencia `ILabRegistry labRegistry` en AssetVault) están
+> reservados para FASE 2. El contrato vive en `packages/contracts/src/phase2/` y NO se deployará
+> junto con el MVP. Esta sección se mantiene como referencia de diseño para cuando se active.
 
-`LabRegistry` mantiene la whitelist de laboratorios certificados autorizados a firmar `QualityAttestation`s. Cada lab tiene una dirección de firma (clave pública ECDSA registrada on-chain), una jurisdicción ISO, especializaciones (palinología, NMR, C4, residuos), un hash de su acreditación documental y un flag `active`. Consultado por `AssetVault.confirmarCalidad` para validar (1) que cada lab está autorizado en su especialización y (2) que la firma sobre el digest del reporte es válida.
+### 7.1 Propósito (FASE 2)
+
+`LabRegistry` mantendrá la whitelist de laboratorios certificados autorizados a firmar `QualityAttestation`s. Cada lab tiene una dirección de firma (clave pública ECDSA registrada on-chain), una jurisdicción ISO, especializaciones (palinología, NMR, C4, residuos), un hash de su acreditación documental y un flag `active`. Consultado por `AssetVault.confirmarCalidad` para validar (1) que cada lab está autorizado en su especialización y (2) que la firma sobre el digest del reporte es válida.
 
 Política de la plataforma: mínimo 2 labs en whitelist al lanzamiento (recomendado 1 boliviano + 1 europeo: IBNORCA + Eurofins). Cada `QualityAttestation` debe ser firmada por al menos 2 labs (`MIN_LABS_PARA_ATTESTATION`), con tests independientes que se contrastan.
 
@@ -1601,42 +1672,44 @@ Cada contrato expone su interfaz pública en un archivo separado `interfaces/I<N
 
 ### 8.1 `IAssetVault.sol`
 
-Declara:
-- `crearLote`, `comprar`, `confirmarCosecha`, `confirmarCalidad`, `confirmarAlmacenamiento`, `marcarFallido`, `reembolsarLoteFallido`
-- `lockForRedemption`, `burnRedemptionTokens`, `returnRedemptionTokens`
-- `getLote`, `getLoteEstado`, `getQualityAttestation`, `isMonofloralCertified`, `tokensDisponibles`
-- Todos los eventos públicos
-- Errors documentados en sección 4.9
-- Re-export del enum `LoteEstado` y del struct `LoteMiel`, `QualityAttestation`
+Declara (MVP):
+- `crearLote`, `comprar`, `confirmarCosecha`, `confirmarAlmacenamiento`, `marcarFallido`, `reembolsarLoteFallido`, `finalizarReembolso`
+- `setRedemptionManager`, `burnForRedemption`
+- `liberarReservaTecnica`
+- `pause`, `unpause`
+- Views: `lotes`, `kgDisponibles`, `reservaTecnicaActual`, `totalSupply`
+- Eventos y errors (ver §4.8, §4.9)
+- Enums `LoteEstado`, `TipoCertificadoOrigen` y struct `LoteMiel` declarados en la interfaz
 
-> **Patrón:** los structs y enums se declaran en el contrato concreto y la interfaz los **re-importa** vía `import { LoteEstado, LoteMiel, QualityAttestation } from "../AssetVault.sol";` o se declaran en un archivo separado `types/AssetVaultTypes.sol` (preferido para limpieza). CONFLICT: ver sección 10.
+> **FASE 2 removido:** `confirmarCalidad`, `lockForRedemption`, `burnRedemptionTokens`, `returnRedemptionTokens`, `QualityAttestation`.
 
 ### 8.2 `IIdentityRegistry.sol`
 
-Declara:
-- `setKYC`, `markSanctioned`, `unmarkSanctioned`, `freeze`, `unfreeze`, `revokeKYC`, `setPlumeArcBridge`
-- `getIdentity`, `getTier`, `checkCompliance`, `isCompliant`, `isSanctioned`, `isFrozen`
-- Eventos
-- Errors
-- Re-export del struct `IdentityData`
+Declara (MVP):
+- `setKYC`, `revokeKYC`, `markSanctioned`, `unmarkSanctioned`, `freezeAddress`, `unfreezeAddress`
+- `pause`, `unpause`
+- Views: `getTier`, `isSanctioned`, `isFrozen`, `isExpired`, `canMint`, `canRedeem`, `getJurisdiction`, `getKYCData`
+- Eventos y errors (ver §5.8, §5.9)
+- Struct `KYCData` declarado en la interfaz
+
+> **Removidos:** `checkCompliance`, `isCompliant`, `getIdentity`, `setPlumeArcBridge`.
 
 ### 8.3 `IRedemptionManager.sol`
 
-Declara:
-- `iniciarRedencion`, `confirmarExportacion`, `completarRedencion`, `cancelarRedencion`, `pause`, `unpause`
-- `getRedencion`, `getEstadoRedencion`, `getRedencionesByBuyer`, `getRedencionesByLote`
-- Eventos
-- Errors
-- Re-export del enum `EstadoRedencion` y del struct `Redencion`
+Declara (MVP):
+- `iniciarRedencion` (sin parámetro buyer — es msg.sender)
+- `confirmarExportacion`, `completarRedencion`, `cancelarRedencion`
+- `pause`, `unpause`
+- Views: `getRedencion`, `getNextRedencionId`, `availableBalance`, `tokensLockedFor`
+- Constantes públicas: `MAX_DUE_NUMERO_LENGTH`, `REDENCION_TIMEOUT`
+- Eventos y errors (ver §6.8, §6.9)
+- Enum `EstadoRedencion` y struct `Redencion` declarados en la interfaz
 
-### 8.4 `ILabRegistry.sol`
+> **Removidos:** `getEstadoRedencion`, `getRedencionesByBuyer`, `getRedencionesByLote`.
 
-Declara:
-- `addLab`, `deactivateLab`, `reactivateLab`, `updateLabSpecializations`
-- `getLab`, `isActive`, `isLabCertifiedFor`, `getAllLabs`, `verifyAttestationSignature`, `getLabReportDigest`
-- Eventos
-- Errors
-- Re-export del enum `Specialization` y del struct `Lab`
+### 8.4 `ILabRegistry.sol` (FASE 2 — reservado, ADR-010)
+
+> Reservado. No se genera ni deploya en MVP. Ver §7 para referencia de diseño.
 
 ---
 
@@ -1700,108 +1773,63 @@ Esta sección recoge decisiones de diseño que ya están fijadas en estas specs 
 
 | # | Decisión | Razón |
 |---|---|---|
-| D1 | El **contador `nextLoteId`** es global en `AssetVault` (no por asset type). Asset = miel (único en MVP), por lo que el espacio de IDs es compartido. | Simplifica el sistema en MVP. Multi-asset queda fuera de scope. |
-| D2 | `TREASURY_SRL_ROLE` se **declara como rol on-chain pero no se asigna ninguna función mutator on-chain**. Existe para audit trail (eventos pueden indexar la dirección) y para futuras extensiones. | El movimiento real de USDC al productor ocurre off-chain (Safe Wyoming → wallet productor). On-chain solo emitimos `ReservaTecnicaLiberada`. |
-| D3 | `RedemptionManager` recibe la dirección de `AssetVault` por **constructor inmutable**. `AssetVault` también recibe `RedemptionManager` post-deploy via rol dedicado `REDEMPTION_MANAGER_ROLE` controlado por `DEFAULT_ADMIN_ROLE`. | Romper el ciclo de dependencia: AssetVault se deploya primero, luego RedemptionManager con ref a AssetVault, luego AssetVault.grantRole(REDEMPTION_MANAGER_ROLE, redemptionManager). |
-| D4 | Los **structs y enums** se declaran en el archivo del contrato concreto (`AssetVault.sol`, `RedemptionManager.sol`, `LabRegistry.sol`) y las interfaces los **re-importan** vía `import { Type } from "../Contract.sol"`. | Evita duplicación; mantiene single source of truth. Alternativa archivo `types/*.sol` queda como opción de refactor si la auditoría la sugiere. |
-| D5 | **EIP-712** se usa solo en `LabRegistry` para firmas estructuradas de labs. `AssetVault.comprar` no requiere firma del buyer porque el backend ya firmó la tx (BACKEND_SIGNER_ROLE). | Mantener footprint de firma criptográfica donde aporta seguridad real (verificación cross-party). |
-| D6 | El **digest anti-replay** de attestations se computa como `keccak256(abi.encode(loteId, attestation.labAddresses, attestation.fullReportHashes, attestation.testedAt, address(this), block.chainid))`. | Garantiza unicidad por lote, set de labs, set de reportes, contrato y chain. Inmune a replay cross-chain/cross-contract. |
-| D7 | **`ERC1155Pausable`** se incluye en herencia. `pause()` bloquea ALL operaciones (mints, burns, transfers internos hacia RedemptionManager). `RedemptionManager.pause()` solo bloquea `iniciarRedencion`. | Granularidad útil: ante incidente solo en exportaciones, pausar RedemptionManager. Ante incidente sistémico, pausar AssetVault. |
-| D8 | **Sin URI base hardcoded**. El constructor recibe `_baseURI` como parámetro. | Permite cambiar dominio sin redeploy (vía `setLoteURI` per-lote) y deploys de test independientes. |
-| D9 | **Reentrancy guards** en cualquier función que llame contratos externos: AssetVault → USDC, AssetVault → IdentityRegistry, AssetVault → LabRegistry, RedemptionManager → AssetVault. | Defense in depth + zero perf cost relevante. |
-| D10 | **Compliance officer** es un único actor humano (hardware wallet), no multi-sig dedicado. Justificación: las acciones reversibles (`unmarkSanctioned`, `unfreeze`) requieren responsividad. El Safe 2-de-3 cubre las acciones críticas (`grantRole`, `confirmarCalidad`, etc.). | Trade-off velocidad vs descentralización; documentado. |
+| D1 | El **loteId** es externo — el caller de `crearLote` elige el ID. No hay counter interno monotónico en AssetVault. | Permite coordinación off-chain del ID antes del deploy (align con base de datos y UI). |
+| D2 | `TREASURY_SRL_ROLE` ejecuta **`liberarReservaTecnica` on-chain**, que transfiere USDC directamente desde el escrow del contrato. | Escrow total (FIX H-01): USDC vive en el contrato hasta liberación explícita. No hay movimiento off-chain. |
+| D3 | `RedemptionManager` recibe las dependencias por constructor (`IAssetVault`, `IIdentityRegistry`). `AssetVault` recibe `redemptionManager` post-deploy vía `setRedemptionManager` (one-time, callable solo por DEFAULT_ADMIN_ROLE). **Opción B** (address inmutable one-time) sobre **Opción A** (rol dedicado). | Evita que accidentalmente se otorgue el rol a más de una dirección. |
+| D4 | Los **structs y enums** se declaran directamente en las **interfaces** (`IAssetVault.sol`, `IIdentityRegistry.sol`, `IRedemptionManager.sol`), no en los contratos concretos. | Las interfaces son el contrato público; los tipos deben vivir ahí para que los consumidores no dependan de la implementación. |
+| D5 | **EIP-712** se usa solo en `LabRegistry` (FASE 2). El MVP no lo usa. | Solo aporta donde hay firmas cross-party. |
+| D6 | **Option B — Lock Acumulator**: tokens permanecen en el wallet del comprador. El lock es contable en `_tokensLockedFor`. El burn ocurre en `completarRedencion` vía `burnForRedemption`. | Mantiene el invariante "NUNCA P2P" de AssetVault sin excepción. Elimina complejidad de escrow + devolución de tokens. |
+| D7 | **`ERC1155Pausable`** + **`Pausable`** en los 3 contratos. Asimetría ADR-016: `pause()` = COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE; `unpause()` = solo DEFAULT_ADMIN_ROLE. | Defensa cruzada: si Compliance está comprometido, el Safe puede pausar igual. Unpause requiere decisión deliberada del Safe. |
+| D8 | **URI base** recibida como parámetro en constructor. Sin URI per-lote en MVP. | Simplifica MVP. |
+| D9 | **Reentrancy guards** en funciones que llaman contratos externos: AssetVault → USDC, AssetVault → IdentityRegistry, RedemptionManager → AssetVault. | Defense in depth. |
+| D10 | **Compliance officer** implementado como dos wallets (titular + suplente) con `COMPLIANCE_OFFICER_ROLE`. No multi-sig dedicado. | Responsividad ante emergencias. Safe 2-de-3 cubre acciones críticas. |
+| D11 | **ADR-017 2-phase export state machine**: `confirmarExportacion` (INICIADA→EN_EXPORTACION, NO burn) + `completarRedencion` (EN_EXPORTACION→COMPLETADA, burn). | Separar el registro del DUE del burn final, reflejando la realidad operacional: el DUE se emite días antes de que el shipment salga. |
+| D12 | **ADR-015 timeout policy**: `REDENCION_TIMEOUT = 60 días`. El comprador puede auto-cancelar tras ese período si el Oracle no avanza. `cancelarRedencion` acepta INICIADA o EN_EXPORTACION. | Cierra RM-06 + RM-07 (HIGH): un Lock acumulator sin escape valve para el comprador es inaceptable en consumer protection. |
 
-### 10.2 Conflicts detectados (requieren decisión humana antes de implementar)
+### 10.2 Conflicts detectados
 
-**CONFLICT 1: `TREASURY_SRL_ROLE` on-chain vs off-chain.**
+**CONFLICT 1: `TREASURY_SRL_ROLE` on-chain vs off-chain. — RESUELTO**
 
-> En arquitectura v2.0, sección 9.1, se menciona el rol como existente on-chain. Sin embargo, en sección 23.3 flujo, "tx liberarReservaTecnica() desde wallet TREASURY_SRL_ROLE" sugiere que la wallet ejecuta una tx custom **fuera del contrato** (movimiento USDC directo en wallet operativa, no llamada a contract function).
->
-> **Propuesta de resolución:** declarar el rol en `AssetVault` pero **sin asignar funciones mutator**. El rol queda como anchor de auditoría (la dirección se emite en eventos cuando aplica), y el movimiento USDC ocurre off-chain en wallet operativa. Si en V2 surge la necesidad de mover USDC on-chain, el rol ya está; basta agregar la función.
->
-> **Acción:** confirmar con el responsable de tesorería que el flujo USDC al productor SRL es 100% off-chain.
+> **Resolución implementada:** `TREASURY_SRL_ROLE` ejecuta `liberarReservaTecnica()` on-chain. El USDC vive en el contrato (escrow total, FIX H-01) y se transfiere directamente al productor SRL en esa llamada. No hay flujo off-chain. Ver D2 en §10.1.
 
-**CONFLICT 2: cómo se cablea `RedemptionManager` ↔ `AssetVault`.**
+**CONFLICT 2: cómo se cablea `RedemptionManager` ↔ `AssetVault`. — RESUELTO**
 
-> Dos opciones razonables:
->
-> **(A) Rol dedicado en AssetVault:** `REDEMPTION_MANAGER_ROLE` que solo el RedemptionManager puede ostentar. Asignado post-deploy.
->
-> **(B) Address inmutable en AssetVault:** parámetro de constructor `redemptionManager` que se setea con un setter `setRedemptionManager` callable solo una vez por `DEFAULT_ADMIN_ROLE`.
->
-> **Propuesta de resolución:** opción (A). Pros: usa el mecanismo AccessControl ya presente, no introduce flag custom one-time. Contras: requiere disciplina operacional de no asignar el rol a más de una address.
->
-> **Acción:** confirmar opción (A); las specs asumen (A) por defecto.
+> **Resolución implementada:** Opción B — `setRedemptionManager(address)` callable una sola vez por DEFAULT_ADMIN_ROLE. `burnForRedemption` revierte con `RedemptionManagerNotSet` si no fue configurado, y con `OnlyRedemptionCanBurn` si el caller no es la dirección configurada. Ver D3 en §10.1.
 
-**CONFLICT 3: storage layout de `QualityAttestation` con arrays dinámicos.**
+**CONFLICT 3: storage layout de `QualityAttestation`. — FASE 2 (ADR-010)**
 
-> Tener `address[] labAddresses` y `bytes32[] fullReportHashes` como **mismo length** se enforce en runtime pero no en estructura. Implica gas costoso en SSTORE/SLOAD al populate.
->
-> **Propuesta de resolución:** mantener el diseño con arrays (es la forma natural y el costo es razonable: ~2 labs típicamente). Si en futuras versiones se decide compactar, evaluar struct con `Lab[2] labs` fija (downside: no extensible).
->
-> **Acción:** validar gas cost en testnet con 2 y con 5 labs. Si excede 250k gas, considerar compactación.
+> No aplica en MVP. `QualityAttestation` y `LabRegistry` son FASE 2. Se retoma cuando LabRegistry se active.
 
-**CONFLICT 4: `reembolsarLoteFallido` requiere USDC líquido en `AssetVault`.**
+**CONFLICT 4: `reembolsarLoteFallido` requiere USDC líquido en `AssetVault`. — RESUELTO**
 
-> El contrato `AssetVault` no recibe USDC en `comprar` (todos los pagos son off-chain). Pero `reembolsarLoteFallido` debe transferir USDC pro-rata. ¿De dónde sale el USDC?
->
-> **Propuesta de resolución:** la wallet operativa Safe Wyoming debe **prefondear** el contrato con USDC antes de invocar `reembolsarLoteFallido`. El monto = `reservaTecnicaUSDCDisponible[loteId] + suma de payments retenidos del lote`. Backend calcula este monto vía Goldsky + audit log; el Safe transfiere USDC al contrato; oracle ejecuta `reembolsarLoteFallido`.
->
-> Alternativamente: usar `IERC20.transferFrom` desde Safe operativo en cada reembolso (requiere allowance previa). Más complejo pero evita parking USDC en el contrato.
->
-> **Acción:** confirmar flujo con tesorería. Las specs documentan ambas vías como aceptables; la implementación elige basada en preferencia operacional.
+> **Resolución implementada:** modelo escrow total (FIX H-01). El USDC del comprador ingresa al contrato en `comprar()`. Si el lote FALLA en PREVENTA, `montoNetoPendiente + reservaTecnicaUSDC` = 100% del pago queda en el contrato disponible para reembolso on-chain sin necesidad de fondear externamente.
 
-**CONFLICT 5: jurisdicción ISO en `bytes2` vs `bytes3`.**
+**CONFLICT 5: jurisdicción ISO en `bytes2` vs `bytes3`. — RESUELTO**
 
-> ISO 3166-1 alpha-2 usa 2 caracteres. ISO 3166-1 alpha-3 usa 3 (Bolivia = "BO" alpha-2, "BOL" alpha-3). La arquitectura usa `bytes2` consistentemente, pero algunos sistemas legales prefieren alpha-3 para no confundir con códigos comerciales.
->
-> **Propuesta de resolución:** mantener `bytes2` (alpha-2) consistente con la arquitectura v2.0. Documentar en un comentario que es ISO 3166-1 alpha-2.
->
-> **Acción:** sin cambio. Confirmar con compliance que alpha-2 es suficiente.
+> `bytes2` (ISO 3166-1 alpha-2) implementado y consistente en todos los contratos.
 
-**CONFLICT 6: confirmación de calidad — ¿una sola firma de Safe o firmas individuales de cada lab + Safe?**
+**CONFLICT 6: confirmación de calidad. — FASE 2 (ADR-010)**
 
-> El flujo descrito en §7B.4 indica:
-> 1. Cada lab firma su reporte off-chain (firmas ECDSA del lab).
-> 2. Backend valida firmas.
-> 3. Safe multi-sig firma la **transacción** `confirmarCalidad`.
->
-> Pero la signature `confirmarCalidad(loteId, attestation, labSignatures[])` exige que las firmas de cada lab sean parámetros explícitos.
->
-> **Propuesta de resolución (ya en specs):** la transacción la ejecuta `ORACLE_ROLE` (Safe), pero pasa las `labSignatures[]` como parámetro. El contrato valida cada firma contra `LabRegistry.verifyAttestationSignature`. Esto da **doble validación criptográfica**: cada lab firma su reporte; el Safe firma la tx que las agrega.
->
-> **Acción:** sin cambio.
+> No aplica en MVP. Se retoma con `LabRegistry` en FASE 2.
 
-**CONFLICT 7: cuántas wallets distintas tienen `BACKEND_SIGNER_ROLE`.**
+**CONFLICT 7: blast radius de `BACKEND_SIGNER_ROLE`. — ABIERTO**
 
-> Si una sola wallet KMS firma todas las txs (compras, KYC, redenciones), el blast radius de un compromiso es total.
->
-> **Propuesta de resolución:** un único `BACKEND_SIGNER_ROLE` en MVP por simplicidad operacional. Plan de fase 2: separar en `MINTER_SIGNER`, `KYC_SIGNER`, `REDEMPTION_SIGNER` con wallets independientes. ADR pendiente.
->
-> **Acción:** documentar en runbook de operaciones que la wallet es high-value; rotación trimestral mínima.
+> Un único `BACKEND_SIGNER_ROLE` en MVP (compras + KYC). Separación en `MINTER_SIGNER` / `KYC_SIGNER` reservada para FASE 2. Rotación trimestral mínima documentada en runbook de operaciones.
 
-**CONFLICT 8: revocación de KYC retroactiva.**
+**CONFLICT 8: revocación de KYC retroactiva. — RESUELTO**
 
-> Si una wallet pasa de tier 2 a revocada después de iniciar una redención (estado `EN_EXPORTACION`), ¿la redención se completa o se cancela?
->
-> **Propuesta de resolución (ya en specs §6.13 punto 6):** la redención se completa. La revocación de KYC posterior no debe revertir un envío físico ya en curso. El compliance officer puede tomar acciones adicionales off-chain (informe a autoridad, devolución física, etc.) pero la tx on-chain se completa.
->
-> **Acción:** sin cambio. Documentar en runbook de compliance.
+> La redención se completa si el KYC se revoca después de `iniciarRedencion`. La validación KYC ocurre solo en `iniciarRedencion`. Ver §6.13 punto 6.
 
-**CONFLICT 9: oracle execution de `confirmarCalidad` requiere el array de `labAddresses`. ¿Y si el lab firmó pero ya fue desactivado entre la firma y la tx?**
+**CONFLICT 9: lab desactivado entre firma y tx. — FASE 2 (ADR-010)**
 
-> **Propuesta de resolución:** validar en `confirmarCalidad` que cada lab esté activo **en el momento de la tx**. Si un lab fue desactivado, la attestation falla y debe re-emitirse con un lab activo alternativo.
->
-> **Acción:** sin cambio. Documentar en runbook de calidad.
+> No aplica en MVP. Se retoma con `confirmarCalidad` en FASE 2.
 
-**CONFLICT 10: granularidad — gramos vs kilos vs tokens en parámetros públicos.**
+**CONFLICT 10: granularidad gramos/kilos/tokens. — RESUELTO (FIX H-02)**
 
-> `crearLote` recibe `kgEsperadosTotal` en kilos enteros. `confirmarCosecha` recibe `kgCosechadoReal` en kilos enteros. `tokensDisponibles` devuelve tokens (0.5 kg cada uno).
->
-> **Propuesta de resolución:** mantener kilos en parámetros de input (más legible humanamente), pero **convertir internamente a gramos** usando `GRAMOS_POR_KILO`. La conversión `tokens ↔ gramos` usa `GRAMOS_POR_TOKEN = 500`. Documentar en cada función con `@dev`.
->
-> **Acción:** sin cambio. Confirmar que ningún caller pasa fracciones de kilo (requeriría cambiar el tipo a algo más fino, e.g. centigramos).
+> Kilos en parámetros de input; gramos internamente (FIX H-02). `crearLote` recibe `kgEsperados`; la conversión interna es `kgEsperados * 1000` gramos. `comprar` valida en gramos para evitar rounding que permitiría overmint.
 
 ---
 
-**Fin del documento `CONTRACT-SPECS.md` v1.0**
+**Fin del documento `CONTRACT-SPECS.md` v2.0**
+**Reconciliado contra código real:** 2026-05-28
+**ADRs incorporados:** ADR-010, ADR-015, ADR-016, ADR-017, FIX M-08, FIX H-01, FIX H-02, FIX M-01/01b/03/04/05/06

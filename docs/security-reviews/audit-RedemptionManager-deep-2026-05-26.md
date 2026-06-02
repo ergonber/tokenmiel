@@ -444,3 +444,51 @@ El contrato está en una **trayectoria audit-ready**. Las acciones pendientes so
 
 **Status del ciclo de auditoría:** ✅ COMPLETADO
 **Próxima acción recomendada:** crear los 3 ADRs pendientes + ejecutar las acciones bloqueantes listadas en §9 antes del siguiente ciclo de auditoría externa.
+
+---
+
+## Addendum — Cierre de findings vía ADRs (2026-05-29)
+
+> **Contexto temporal importante.** Esta auditoría se escribió el **2026-05-26**, ANTES de que existieran los ADRs que cierran los findings deferidos. En ese momento, §8 y §9 de este documento solo podían *recomendar* la creación de 3 ADRs pendientes ("ADR Timeout Policy", "ADR Spec Reconciliation", "ADR Pause Asymmetry") sin números asignados. Esos ADRs se redactaron y aceptaron el **2026-05-27** (ADR-015, ADR-016, ADR-017) y la implementación correspondiente ya está en `packages/contracts/src/RedemptionManager.sol`. Este addendum mapea cada finding que requería una decisión arquitectónica a su ADR de cierre y deja constancia del estado FINAL verificado. **No modifica nada del cuerpo original** — lo extiende.
+
+### Mapa finding → ADR de cierre
+
+| Finding(s) | Severidad orig | Estado en el audit (2026-05-26) | ADR de cierre (2026-05-27) | Estado FINAL |
+|---|---|---|---|---|
+| **RM-06 + RM-07** | HIGH + HIGH | ⏸️ DEFERIDO → "ADR Timeout Policy" | **ADR-015** (Accepted) | ✅ CERRADO |
+| **RM-21** | MEDIUM | ⏸️ DEFERIDO → "ADR Pause Asymmetry" | **ADR-016** (Accepted) | ✅ CERRADO |
+| **RM-11** | MEDIUM | ⏸️ DEFERIDO → "ADR Spec Reconciliation" | **ADR-017** (Accepted) | ✅ CERRADO |
+
+### Timeout policy (RM-06, RM-07) → ADR-015
+
+**Lo que el finding señalaba.** Bajo el modelo Opción B (lock contable), `cancelarRedencion` solo era callable por `ORACLE_ROLE`. Si el Safe 2-de-3 desaparecía (signers perdidos, multi-sig comprometido, SRL disuelta o sancionada), las redenciones en estado `INICIADA` quedaban congeladas y los tokens del comprador permanecían **lockeados eternamente** en `_tokensLockedFor`, sin compensación ni escape valve (RM-06). Sumado a eso, no había timeout ni expiración para limpiar redenciones huérfanas (RM-07). El audit los marcó como deferidos porque ambos compartían causa raíz y requerían una decisión arquitectónica sobre *quién* puede cancelar y *cuándo*, no un fix mecánico.
+
+**Lo que ADR-015 decidió.** Se adoptó la Opción A — "Buyer self-cancel + Compliance Officer co-canceler": tres paths de cancelación para una redención no finalizada — (1) `ORACLE_ROLE` siempre, (2) `COMPLIANCE_OFFICER_ROLE` siempre (motivos regulatorios, alineado con `CONTRACT-SPECS.md` §6.3), y (3) el propio comprador (`msg.sender == r.comprador`) una vez transcurrido `REDENCION_TIMEOUT = 60 days` desde `createdAt`. El timeout de 60 días se justificó con el tiempo real del export Bolivia → UE (30-60 días típicos) y cierra el riesgo regulatorio MiCA + Directiva 2011/83/UE de consumer protection.
+
+**Cómo lo refleja el código.** `RedemptionManager.sol` declara `uint256 public constant REDENCION_TIMEOUT = 60 days;` (línea 55) y el nuevo error `OnlyAuthorizedCanceler()` (línea 74). El modifier `onlyRole(ORACLE_ROLE)` se eliminó de `cancelarRedencion` y se reemplazó por lógica de access control inline que evalúa los 3 paths (`isOracle`, `isCompliance`, `isBuyerAfterTimeout`, líneas 270-281). El path del buyer-after-timeout garantiza que el lock contable nunca queda eterno. El uso de `block.timestamp` está anotado con `slither-disable-next-line timestamp` (línea 278) con la justificación documentada: el threshold es 60 días, la manipulación de ±15s de los validators es operacionalmente irrelevante.
+
+### Pause asymmetry (RM-21) → ADR-016
+
+**Lo que el finding señalaba.** ADR-013 había establecido en `IdentityRegistry.sol` una asimetría deliberada: `pause()` callable por `COMPLIANCE_OFFICER_ROLE` OR `DEFAULT_ADMIN_ROLE` (respuesta rápida), pero `unpause()` solo por `DEFAULT_ADMIN_ROLE` (Safe 2-de-3, decisión deliberada post-incidente). Esa convención **nunca se propagó** a `AssetVault.sol` ni a `RedemptionManager.sol`, que quedaron con `pause`/`unpause` **simétricos** (ambos `COMPLIANCE_OFFICER` only). El threat model es real: si la wallet del Compliance Officer se compromete, el atacante puede ejecutar timing attacks pause/unpause a voluntad en 2 de los 3 contratos.
+
+**Lo que ADR-016 decidió.** Se adoptó la Opción A — propagar el patrón de ADR-013 de forma **sistémica y uniforme** a los 3 contratos del MVP. `pause()` pasa a ser defensa cruzada (`COMPLIANCE_OFFICER_ROLE` OR `DEFAULT_ADMIN_ROLE`) con error custom `UnauthorizedPauseActor()`, mientras `unpause()` queda restringido a `DEFAULT_ADMIN_ROLE` (Safe 2-de-3). Se rechazaron las opciones de mantener la simetría o aplicarla solo a un subconjunto de contratos por la inconsistencia que generarían frente a auditores externos.
+
+**Cómo lo refleja el código.** `pause()` (líneas 300-306) ya no usa `onlyRole`: chequea inline `hasRole(COMPLIANCE_OFFICER_ROLE)` OR `hasRole(DEFAULT_ADMIN_ROLE)` y revierte con `UnauthorizedPauseActor()` (declarado en línea 77) si ninguno aplica. `unpause()` (líneas 311-314) usa `onlyRole(DEFAULT_ADMIN_ROLE)`. Ambas funciones emiten los eventos custom `EmergencyPaused` / `EmergencyUnpaused` (cerrando además el finding LOW RM-15). El NatSpec de ambas referencia explícitamente ADR-016.
+
+### Export state machine (RM-11) → ADR-017
+
+**Lo que el finding señalaba.** `CONTRACT-SPECS.md` §6.5 define un flujo de redención de **3 fases activas** con **2 funciones separadas** (`confirmarExportacion` registra el DUE → `EN_EXPORTACION`; `completarRedencion` registra el BL/AWB y quema → `COMPLETADA`). La implementación había **colapsado ambas en una sola función**: el estado `EstadoRedencion.EN_EXPORTACION` quedaba como *dead state* (definido en el enum pero nunca escrito), el spec y el código divergían, y el buyer quedaba ciego durante los ~30 días de gap entre el DUE y el BL/AWB sin checkpoint intermedio ni visibilidad on-chain.
+
+**Lo que ADR-017 decidió.** Se adoptó la Opción A — implementar el spec original al pie de la letra: 2 funciones separadas con flujo de 3 fases activas. `confirmarExportacion` transiciona `INICIADA → EN_EXPORTACION` registrando solo el DUE (sin burn, sin decremento de lock); la nueva `completarRedencion` transiciona `EN_EXPORTACION → COMPLETADA` decrementando el lock acumulador y quemando los tokens. `cancelarRedencion` se amplió para aceptar la cancelación desde `INICIADA` **o** desde `EN_EXPORTACION` (checkpoint operacional para incidentes aduaneros post-DUE). Se rechazaron las opciones de simplificar el spec (irreversible bajo ADR-003) o de simular las 2 transiciones en una sola tx (audit trail engañoso).
+
+**Cómo lo refleja el código.** `confirmarExportacion(uint256 redencionId, string calldata dueNumero)` (líneas 185-202) ya no recibe `hashBLAWB`, valida estado `INICIADA`, escribe `EstadoRedencion.EN_EXPORTACION` y emite `RedencionEnExportacion` sin tocar el lock ni quemar. La nueva función `completarRedencion(uint256 redencionId, bytes32 hashBLAWB)` (líneas 214-244) valida estado `EN_EXPORTACION` con el nuevo error `NotInExportacion()` (declarado en línea 80), aplica la pre-validación defensiva de balance (path RM-04), decrementa `_tokensLockedFor` antes del burn (CEI estricto) y delega el burn a `assetVault.burnForRedemption`. `cancelarRedencion` (línea 264) acepta ambos estados (`INICIADA` o `EN_EXPORTACION`), reusando la misma lógica de los 3 paths de ADR-015.
+
+### Estado FINAL del contrato
+
+Con los 3 ADRs implementados y verificados, el `RedemptionManager.sol` alcanzó el estado **audit-ready** que en §10 del cuerpo original figuraba como "NO TODAVÍA". Los dos gaps bloqueantes que quedaban abiertos en la auditoría del 2026-05-26 — coverage de branches al 50% y Slither no ejecutado — están cerrados:
+
+- ✅ **100% branch coverage** sobre `RedemptionManager.sol` (cerrando los gaps de §7: branches 50% → 100%, junto con los tests deferidos RM-25/RM-26/RM-27/RM-28 y los tests nuevos exigidos por los 3 ADRs).
+- ✅ **Slither: 0 findings** (el análisis estático que en §7 figuraba como "NO EJECUTADO" se corrió y quedó limpio; el único `block.timestamp` flagged es el falso positivo del timeout de ADR-015, suprimido con justificación inline).
+- ✅ **216 tests en verde** en la suite completa del MVP (los 33/33 originales de §7 más los tests agregados por ADR-015, ADR-016 y ADR-017).
+
+Los findings que requerían una decisión arquitectónica (RM-06, RM-07, RM-11, RM-21) están **CERRADOS vía ADR-015 / ADR-016 / ADR-017**. El veredicto de §10 se actualiza: el contrato pasó de "trayectoria audit-ready" a **audit-ready efectivo**, con la máquina de estados, la timeout policy y la asimetría de pause alineadas al spec y a las decisiones arquitectónicas formales.

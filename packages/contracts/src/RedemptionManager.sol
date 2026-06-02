@@ -14,14 +14,17 @@ import {IIdentityRegistry} from "./interfaces/IIdentityRegistry.sol";
 /// @title RedemptionManager
 /// @author Daniel Hidalgo Carrasco
 /// @notice Gestor del flujo de redencion fisica (almacenamiento → exportacion) con modelo de lock contable.
-/// @dev Workflow:
+/// @dev Workflow (ADR-017 — maquina de estados de 3 fases):
 ///      1. `iniciarRedencion()`: comprador (tier >= 2) registra la intencion de redimir tokens.
 ///         Los tokens NO se transfieren — se registra un lock logico en `_tokensLockedFor`.
 ///         El comprador no puede iniciar mas redenciones que cubran mas tokens de los que tiene.
 ///      2. (off-chain) SRL gestiona DUE + courier + BL/AWB.
-///      3. `confirmarExportacion()`: Oracle (Safe 2-de-3) quema los tokens del comprador
-///         directamente (via AssetVault.burnForRedemption) y registra DUE/BL-AWB.
-///      4. (alternativa) `cancelarRedencion()`: si falla aduana, libera el lock al comprador.
+///      3. `confirmarExportacion()`: Oracle (Safe 2-de-3) registra el DUE de SENASAG y transiciona
+///         INICIADA -> EN_EXPORTACION. NO quema tokens todavia — el lock sigue activo.
+///      4. `completarRedencion()`: Oracle (Safe 2-de-3) recibe el BL/AWB, libera el lock y QUEMA
+///         los tokens via AssetVault.burnForRedemption (EN_EXPORTACION -> COMPLETADA). Unico burn.
+///      5. (alternativa) `cancelarRedencion()`: desde INICIADA o EN_EXPORTACION libera el lock al
+///         comprador SIN quemar (ADR-015 habilita self-cancel del buyer tras REDENCION_TIMEOUT).
 /// @custom:security
 ///   - Modelo de lock contable (Option B): los tokens permanecen en el wallet del comprador
 ///     todo el tiempo. El lock es contable — registrado en `_tokensLockedFor[loteId][buyer]`.
@@ -49,6 +52,11 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     /// @dev Los numeros DUE reales son < 64 chars. Limita storage inflation por parte del Oracle.
     uint256 public constant MAX_DUE_NUMERO_LENGTH = 64;
 
+    /// @notice Tiempo despues del cual el comprador puede self-cancel una redencion stuck (ADR-015).
+    /// @dev 60 dias balancea export-time tipico Bolivia→UE (30-45d + margen) con consumer protection
+    ///      del buyer si el Oracle Safe desaparece. Resuelve RM-06 + RM-07 (HIGH) del audit.
+    uint256 public constant REDENCION_TIMEOUT = 60 days;
+
     // ---- Storage ----
     mapping(uint256 => Redencion) private _redenciones;
     uint256 private _nextRedencionId;
@@ -64,7 +72,15 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     error LoteNotFound(uint256 loteId);
     error LoteNotInAlmacenado();
     error CantidadCero();
+    error CantidadExcedeSupply();
     error BalanceInsuficiente();
+    error OnlyAuthorizedCanceler();
+
+    /// @dev ADR-016: error usado por pause() cuando el caller no tiene COMPLIANCE_OFFICER ni DEFAULT_ADMIN.
+    error UnauthorizedPauseActor();
+
+    /// @dev ADR-017: error usado por completarRedencion() cuando la redencion no esta en EN_EXPORTACION.
+    error NotInExportacion();
     error InvalidHash();
     error RedencionNotIniciada();
     error RedencionAlreadyFinalized();
@@ -131,6 +147,12 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
             revert LoteNotInAlmacenado();
         }
 
+        // RM-19: defense-in-depth check — cantidadTokens no puede exceder el totalSupply del lote.
+        //        Bajo Opcion B, esta condicion es redundante con el balance check de abajo
+        //        (porque balanceOf(buyer) <= totalSupply siempre). Se mantiene como segunda barrera
+        //        contra hipoteticos bugs en ERC1155Supply o paths futuros que bypassen el balance check.
+        if (cantidadTokens > assetVault.totalSupply(loteId)) revert CantidadExcedeSupply();
+
         // RM-01 + RM-02: validar balance disponible (balance real - tokens ya lockeados)
         uint256 currentBalance = IERC1155(address(assetVault)).balanceOf(msg.sender, loteId);
         uint256 alreadyLocked = _tokensLockedFor[loteId][msg.sender];
@@ -155,22 +177,15 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
     }
 
     /// @inheritdoc IRedemptionManager
-    /// @notice Confirma la exportacion fisica quemando los tokens del comprador.
-    /// @dev Solo ORACLE_ROLE (Safe 2-de-3). NO usa `whenNotPaused` por diseno (CONTRACT-SPECS §6.13.8):
-    ///      una vez iniciada una redencion, el flujo de exportacion debe poder completarse o cancelarse
-    ///      incluso si el contrato se pausa por incidente. Pausar bloquea solo `iniciarRedencion`.
+    /// @notice Registra la emision del DUE (Declaracion Unica de Exportacion) por SENASAG.
+    /// @dev ADR-017 (fase 1 de 2): transiciona INICIADA → EN_EXPORTACION. NO quema tokens todavia.
+    ///      Solo ORACLE_ROLE (Safe 2-de-3). NO usa whenNotPaused por diseno (CONTRACT-SPECS §6.13.8).
     /// @custom:security
     ///   - NO usa whenNotPaused por diseno — ver CONTRACT-SPECS §6.13.8.
-    ///   - CEI estricto: (1) Checks (estado, DUE, hash, balance), (2) Effects (estado, lock decrement,
-    ///     campos), (3) Interactions (burn via AssetVault).
+    ///   - NO decrementa el lock acumulator ni quema tokens — el lock se libera en completarRedencion.
     ///   - El Oracle Safe es responsable de NO confirmar exportaciones durante un incidente
     ///     que afecte la cadena de custodia fisica.
-    ///   - RM-04: pre-validacion de balance antes de state changes para fail fast.
-    function confirmarExportacion(uint256 redencionId, string calldata dueNumero, bytes32 hashBLAWB)
-        external
-        onlyRole(ORACLE_ROLE)
-        nonReentrant
-    {
+    function confirmarExportacion(uint256 redencionId, string calldata dueNumero) external onlyRole(ORACLE_ROLE) {
         // ---- Checks ----
         Redencion storage r = _redenciones[redencionId];
         if (r.comprador == address(0)) revert RedencionNotIniciada();
@@ -180,6 +195,30 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         if (dueBytes.length == 0) revert EmptyDUE();
         if (dueBytes.length > MAX_DUE_NUMERO_LENGTH) revert DUENumeroTooLong();
 
+        // ---- Effects ----
+        r.estado = EstadoRedencion.EN_EXPORTACION;
+        r.dueNumero = dueNumero;
+
+        // ---- Interactions (none) ----
+        // RM-18: actor indexed para forensics (que Safe signer registro el DUE)
+        emit RedencionEnExportacion(redencionId, msg.sender, dueNumero);
+    }
+
+    /// @inheritdoc IRedemptionManager
+    /// @notice Completa la redencion al recibir BL/AWB — quema los tokens del comprador.
+    /// @dev ADR-017 (fase 2 de 2): transiciona EN_EXPORTACION → COMPLETADA. Burn aqui.
+    ///      Solo ORACLE_ROLE (Safe 2-de-3). NO usa whenNotPaused por diseno (CONTRACT-SPECS §6.13.8).
+    /// @custom:security
+    ///   - NO usa whenNotPaused por diseno — ver CONTRACT-SPECS §6.13.8.
+    ///   - CEI estricto: (1) Checks (estado, hash, balance), (2) Effects (estado, lock decrement,
+    ///     campos), (3) Interactions (burn via AssetVault).
+    ///   - RM-04: pre-validacion defensiva de balance — branch dead-code bajo Opcion B, pero
+    ///     protege contra hipoteticos bugs en ERC1155Supply o paths futuros.
+    function completarRedencion(uint256 redencionId, bytes32 hashBLAWB) external onlyRole(ORACLE_ROLE) nonReentrant {
+        // ---- Checks ----
+        Redencion storage r = _redenciones[redencionId];
+        if (r.comprador == address(0)) revert RedencionNotIniciada();
+        if (r.estado != EstadoRedencion.EN_EXPORTACION) revert NotInExportacion();
         if (hashBLAWB == bytes32(0)) revert InvalidHash();
 
         // RM-04: pre-validacion de balance para fail fast (antes de cualquier state change)
@@ -191,11 +230,10 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         _tokensLockedFor[r.loteId][r.comprador] -= r.cantidadTokens;
 
         r.estado = EstadoRedencion.COMPLETADA;
-        r.dueNumero = dueNumero;
         r.hashBLAWB = hashBLAWB;
         r.completedAt = uint64(block.timestamp);
 
-        // Capturar valores locales para el burn (evita re-reads de storage tras cambio de estado)
+        // Capturar valores locales para el burn
         address comprador = r.comprador;
         uint256 loteId = r.loteId;
         uint256 cantidadTokens = r.cantidadTokens;
@@ -204,26 +242,45 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         // Burn delegado al AssetVault — unica via permitida de burn
         assetVault.burnForRedemption(comprador, loteId, cantidadTokens);
 
-        emit RedencionEnExportacion(redencionId, dueNumero);
-        emit RedencionCompletada(redencionId, hashBLAWB);
+        // RM-18: actor indexed para forensics
+        emit RedencionCompletada(redencionId, msg.sender, hashBLAWB);
     }
 
     /// @inheritdoc IRedemptionManager
     /// @notice Cancela una redencion en curso, liberando el lock contable del comprador.
-    /// @dev Solo ORACLE_ROLE. NO usa `whenNotPaused` por diseno (CONTRACT-SPECS §6.13.8):
-    ///      la cancelacion debe estar disponible incluso durante una pausa de emergencia
-    ///      para resolver redenciones stuck.
+    /// @dev ADR-015 timeout policy — 3 paths validos para cancelar:
+    ///        1. ORACLE_ROLE: siempre (operacion normal)
+    ///        2. COMPLIANCE_OFFICER_ROLE: siempre (motivos regulatorios, CONTRACT-SPECS §6.3)
+    ///        3. msg.sender == r.comprador: despues de REDENCION_TIMEOUT (escape valve, RM-06)
     /// @custom:security
     ///   - NO usa whenNotPaused por diseno — ver CONTRACT-SPECS §6.13.8.
-    ///   - RM-14: nonReentrant por defense-in-depth. Hoy no hay external calls, pero si en
-    ///     futuras iteraciones se agrega AssetVault.returnRedemptionTokens, el modifier ya esta.
-    ///   - El lock se libera antes del emit (CEI, aunque no hay external calls aqui).
-    function cancelarRedencion(uint256 redencionId, bytes32 reason) external onlyRole(ORACLE_ROLE) nonReentrant {
+    ///   - NO usa onlyRole modifier — access control inline para soportar el path del buyer.
+    ///   - RM-14: nonReentrant por defense-in-depth.
+    ///   - ADR-015: el buyer-after-timeout path garantiza que el lock nunca queda eterno
+    ///     si el Oracle Safe desaparece. Cierra los findings RM-06 + RM-07 (HIGH) del audit.
+    function cancelarRedencion(uint256 redencionId, bytes32 reason) external nonReentrant {
         // ---- Checks ----
         Redencion storage r = _redenciones[redencionId];
         if (r.comprador == address(0)) revert RedencionNotIniciada();
-        if (r.estado != EstadoRedencion.INICIADA) revert RedencionAlreadyFinalized();
+        // ADR-017: se puede cancelar desde INICIADA o EN_EXPORTACION (checkpoint operacional).
+        //          Si goods se detienen en aduana post-DUE, Oracle/Compliance pueden cancelar.
+        if (r.estado != EstadoRedencion.INICIADA && r.estado != EstadoRedencion.EN_EXPORTACION) {
+            revert RedencionAlreadyFinalized();
+        }
         if (reason == bytes32(0)) revert EmptyReason();
+
+        // ADR-015: tres paths de access control evaluados inline
+        bool isOracle = hasRole(ORACLE_ROLE, msg.sender);
+        bool isCompliance = hasRole(COMPLIANCE_OFFICER_ROLE, msg.sender);
+
+        // Slither flagea `block.timestamp` como peligroso porque mineros/validators pueden
+        // manipularlo +/-15s. Es falso positivo aca: el threshold es 60 DIAS (= 5,184,000s),
+        // la manipulacion posible es 0.000003% del threshold — operacionalmente irrelevante.
+        // No se usa para randomness ni precision timing. Mismo patron que IdentityRegistry
+        // usa para KYC expiration. ADR-015 documenta el tradeoff.
+        // slither-disable-next-line timestamp
+        bool isBuyerAfterTimeout = (msg.sender == r.comprador && block.timestamp >= r.createdAt + REDENCION_TIMEOUT);
+        if (!isOracle && !isCompliance && !isBuyerAfterTimeout) revert OnlyAuthorizedCanceler();
 
         // ---- Effects ----
         // Liberar el lock contable (RM-01: el acumulador decrementa en cancelacion)
@@ -234,20 +291,28 @@ contract RedemptionManager is AccessControlDefaultAdminRules, ReentrancyGuard, P
         r.completedAt = uint64(block.timestamp);
 
         // ---- Interactions (none) ----
-        emit RedencionCancelada(redencionId, reason);
+        // RM-18: actor indexed para forensics (que rol/persona cancelo la redencion)
+        emit RedencionCancelada(redencionId, msg.sender, reason);
     }
 
     /// @notice Pausa de emergencia. Bloquea unicamente `iniciarRedencion`.
-    /// @dev Solo COMPLIANCE_OFFICER_ROLE.
+    /// @dev ADR-016 (sistémico): defensa cruzada — COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE.
     ///      confirmarExportacion y cancelarRedencion NO se bloquean (ver CONTRACT-SPECS §6.13.8).
-    function pause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    ///      RM-15: emite EmergencyPaused custom event ADEMAS del Paused default de OZ.
+    function pause() external whenNotPaused {
+        if (!hasRole(COMPLIANCE_OFFICER_ROLE, msg.sender) && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert UnauthorizedPauseActor();
+        }
         _pause();
+        emit EmergencyPaused(msg.sender, uint64(block.timestamp));
     }
 
-    /// @notice Despausa el contrato.
-    /// @dev Solo COMPLIANCE_OFFICER_ROLE.
-    function unpause() external onlyRole(COMPLIANCE_OFFICER_ROLE) {
+    /// @notice Despausa el contrato post-incidente.
+    /// @dev ADR-016 (sistémico): SOLO DEFAULT_ADMIN_ROLE (Safe 2-de-3) — decisión deliberada.
+    ///      RM-15: emite EmergencyUnpaused custom event ADEMAS del Unpaused default de OZ.
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
+        emit EmergencyUnpaused(msg.sender, uint64(block.timestamp));
     }
 
     // ---- View ----

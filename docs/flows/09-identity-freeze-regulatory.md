@@ -22,6 +22,7 @@ When the platform receives a binding regulatory order directing it to block a sp
 - The Compliance Officer has physical access to their hardware wallet
 - The regulatory order is a legally binding document with a verifiable issuer identifier (court stamp, authority letterhead, official reference number)
 - The backend Arweave uploader is operational and funded
+- `IdentityRegistry` is **not paused** — `freezeAddress` and `unfreezeAddress` are mutators and require `whenNotPaused` (FIX H-02)
 
 ---
 
@@ -131,16 +132,19 @@ A wallet can be simultaneously `sanctioned=true` AND `frozen=true`. Both flags m
                                 )
                                 [COMPLIANCE_OFFICER_ROLE, Ledger-signed]
 
-📜 IR        --> 📜 IR        : validate user != address(0)                      ✓
-📜 IR        --> 📜 IR        : validate regulatoryOrder not empty               ✓
-📜 IR        --> 📜 IR        : validate !_kyc[user].frozen                      ✓ (not already frozen)
+📜 IR        --> 📜 IR        : whenNotPaused check                               ✓ (FIX H-02)
+📜 IR        --> 📜 IR        : validate user != address(0)                      ✓ → ZeroAddressUser
+📜 IR        --> 📜 IR        : validate regulatoryOrder not empty               ✓ → EmptyReason
+📜 IR        --> 📜 IR        : validate orderHash != bytes32(0)                 ✓ → InvalidOrderHash (FIX M-01b)
+📜 IR        --> 📜 IR        : validate !_kyc[user].frozen                      ✓ → AlreadyFrozen
 📜 IR        --> 📜 IR        : _kyc[user].frozen = true                         [EFFECT]
 📜 IR        --> 📜 IR        : _kyc[user].updatedAt = block.timestamp           [EFFECT]
 
 📜 IR        ~~> 🚨 Event     : Frozen(
-                                  user: "0xBbbb...",
-                                  regulatoryOrder: "JC-2026-04567 | Juzgado Comercial ...",
-                                  orderHash: 0x1234567890abcdef...
+                                  user:             "0xBbbb...",
+                                  actor:            <COMPLIANCE_OFFICER wallet>,   // msg.sender, indexed (FIX M-03)
+                                  regulatoryOrder:  "JC-2026-04567 | Juzgado Comercial ...",
+                                  orderHash:        0x1234567890abcdef...
                                 )
 
 ⚖️ CO        <-- 📜 IR        : tx confirmed (txHash: "0x789...")
@@ -187,14 +191,25 @@ Gas cost: zero (Arweave cost is paid in AR tokens, typically < $0.01 for a PDF).
 
 ### Step 3 — `freezeAddress()` on-chain
 
-**Contract:** `IdentityRegistry.sol`, lines 122–134
+**Contract:** `IdentityRegistry.sol`, function `freezeAddress`
 
 **Caller:** Compliance Officer hardware wallet holding `COMPLIANCE_OFFICER_ROLE`
 
+**Signature:**
+```solidity
+function freezeAddress(
+    address user,
+    string calldata regulatoryOrder,
+    bytes32 orderHash
+) external onlyRole(COMPLIANCE_OFFICER_ROLE) whenNotPaused
+```
+
 **Validations (fail-fast):**
-1. `user != address(0)` → reverts `ZeroAddressUser()`
-2. `bytes(regulatoryOrder).length > 0` → reverts `EmptyReason()`
-3. `!_kyc[user].frozen` → reverts `AlreadyFrozen()`
+1. `whenNotPaused` — reverts if contract is paused (FIX H-02)
+2. `user != address(0)` → reverts `ZeroAddressUser()`
+3. `bytes(regulatoryOrder).length == 0` → reverts `EmptyReason()`
+4. `orderHash == bytes32(0)` → reverts `InvalidOrderHash()` (FIX M-01b — freeze sin orden documentada no se acepta)
+5. `_kyc[user].frozen` → reverts `AlreadyFrozen()`
 
 **State changes:**
 - `_kyc[user].frozen = true`
@@ -202,9 +217,25 @@ Gas cost: zero (Arweave cost is paid in AR tokens, typically < $0.01 for a PDF).
 
 Note: `regulatoryOrder` (a human-readable string) and `orderHash` (bytes32) are stored in the event log only, not in contract storage. Contract storage holds only the `frozen: bool` flag. This is consistent with the principle of on-chain minimum data — the full document evidence lives in Arweave, and the event log provides the permanent on-chain reference.
 
-**Event:** `Frozen(address indexed user, string regulatoryOrder, bytes32 orderHash)` (line 133 of `IdentityRegistry.sol`)
+**Event:** `Frozen(address indexed user, address indexed actor, string regulatoryOrder, bytes32 orderHash)` — `actor` is `msg.sender` (FIX M-03: indexed for forensics)
 
 **Gas estimate:** ~38,000 gas (warm write to `frozen` bool + event with string)
+
+---
+
+### Pause asymmetry (FIX H-02)
+
+`IdentityRegistry` inherits `Pausable` and `AccessControlDefaultAdminRules` (3-day delay for `DEFAULT_ADMIN_ROLE` transfers, FIX M-08).
+
+| Function | Pausable? | Who can call |
+|---|---|---|
+| `freezeAddress` | Yes (`whenNotPaused`) | `COMPLIANCE_OFFICER_ROLE` |
+| `unfreezeAddress` | Yes (`whenNotPaused`) | `COMPLIANCE_OFFICER_ROLE` |
+| `pause()` | — | `COMPLIANCE_OFFICER_ROLE` **or** `DEFAULT_ADMIN_ROLE` |
+| `unpause()` | — | `DEFAULT_ADMIN_ROLE` only |
+| All view functions (`isFrozen`, `canMint`, etc.) | No — views always work | anyone |
+
+The asymmetric unpause (admin-only) prevents a compromised Compliance Officer from undoing an emergency pause. Views remain live so `AssetVault` and `RedemptionManager` are never blocked from checking compliance status.
 
 ### Step 4 — Audit Trail
 
@@ -263,6 +294,16 @@ When the regulatory order is expired, revoked, or withdrawn by the issuing autho
 3. Uploads the revocation document to Arweave, computes its hash
 4. Calls `unfreezeAddress()` with the reason string referencing the revocation
 
+**Signature:**
+```solidity
+function unfreezeAddress(
+    address user,
+    string calldata reason
+) external onlyRole(COMPLIANCE_OFFICER_ROLE) whenNotPaused
+```
+
+Reverts `NotFrozen()` if the address is not currently frozen.
+
 ```
 ⚖️ CO        --> 📜 IR        : unfreezeAddress(
                                   user: "0xBbbb...",
@@ -271,7 +312,16 @@ When the regulatory order is expired, revoked, or withdrawn by the issuing autho
                                 )
                                 [COMPLIANCE_OFFICER_ROLE, Ledger-signed]
 
-📜 IR        ~~> 🚨 Event     : Unfrozen(user: "0xBbbb...", reason: "Order lifted...")
+📜 IR        --> 📜 IR        : whenNotPaused check              ✓ (FIX H-02)
+📜 IR        --> 📜 IR        : validate user != address(0)      ✓
+📜 IR        --> 📜 IR        : validate reason not empty        ✓
+📜 IR        --> 📜 IR        : validate _kyc[user].frozen       ✓ → NotFrozen if false
+
+📜 IR        ~~> 🚨 Event     : Unfrozen(
+                                  user:   "0xBbbb...",
+                                  actor:  <COMPLIANCE_OFFICER wallet>,   // msg.sender, indexed (FIX M-03)
+                                  reason: "Order lifted..."
+                                )
 ```
 
 Gas estimate for `unfreezeAddress()`: ~28,000 gas.
@@ -284,6 +334,9 @@ Gas estimate for `unfreezeAddress()`: ~28,000 gas.
 |---|---|
 | CO submits order for a wallet not in the platform's records (no KYC record) | `freezeAddress()` still executes successfully — the contract stores `frozen=true` regardless of tier. If that wallet registers KYC later, `canMint` will still return `false`. |
 | CO attempts to freeze an already-frozen wallet | Reverts `AlreadyFrozen()`. Admin panel should pre-check `isFrozen()` before presenting the "Execute Freeze" button. |
+| `orderHash` is zero (backend bug, corrupted hash) | Reverts `InvalidOrderHash()` (FIX M-01b). Backend must verify the computed hash is non-zero before presenting the tx for signing. |
+| CO attempts to unfreeze a non-frozen wallet | Reverts `NotFrozen()`. Admin panel should pre-check `isFrozen()` before presenting the "Execute Unfreeze" option. |
+| Contract is paused | Reverts `EnforcedPause()` (FIX H-02). An emergency pause blocks new freeze/unfreeze mutations; CO must coordinate with DEFAULT_ADMIN_ROLE to unpause before executing. Note: `unpause()` requires `DEFAULT_ADMIN_ROLE` — CO alone cannot unblock this. |
 | Arweave upload fails | Backend blocks the on-chain action. No freeze is executed without a verified Arweave receipt. Alert Slack for manual intervention. |
 | Arweave verification hash mismatch | Backend aborts the flow. The upload is considered corrupted. Alert Slack, retry upload. |
 | CO's Ledger is unavailable | Suplente CO can sign instead (both hold `COMPLIANCE_OFFICER_ROLE` per the constructor in `IdentityRegistry.sol` lines 52-53). |
@@ -327,8 +380,9 @@ Cost:                 ~$0.02
 Events emitted:
   Frozen(
     user:             0xBbbb...,
+    actor:            <CO hardware wallet>,   // msg.sender, indexed (FIX M-03)
     regulatoryOrder:  "JC-2026-04567 | Juzgado Comercial #3 La Paz | 2026-04-15",
-    orderHash:        0x1234567890abcdef...
+    orderHash:        0x1234567890abcdef...   // non-zero, required (FIX M-01b)
   )
 
 Post-state:

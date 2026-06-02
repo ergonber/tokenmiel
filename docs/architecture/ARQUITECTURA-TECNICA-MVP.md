@@ -5,16 +5,23 @@
 ---
 
 **Autor:** Daniel Hidalgo Carrasco
-**Fecha:** 19 de mayo de 2026
-**Versión:** 2.0
+**Fecha:** 29 de mayo de 2026
+**Versión:** 2.1
 **Estado:** Documento de arquitectura para revisión técnica y presentación institucional
 
 **Cambios v1.0 → v2.0:**
 - Red blockchain: cambio de Polygon PoS único a **multi-chain Plume Network (primaria) + Polygon PoS (secundaria)**
 - Decisión sobre Chainlink: **revertida**. Incorporamos Chainlink Proof of Reserve + aplicación al BUILD program
-- Nuevo pilar arquitectónico: **oráculo de calidad (palinología + NMR + LabRegistry)** como diferenciador del producto
-- 4 contratos en lugar de 3 (agregamos `LabRegistry.sol`)
-- Nuevo módulo backend: `quality/` para integración con laboratorios certificados
+- Nuevo pilar arquitectónico: **oráculo de calidad (palinología + NMR + LabRegistry)** como diferenciador del producto — **reservado para FASE 2 (ADR-010)**
+- 3 contratos MVP (AssetVault + IdentityRegistry + RedemptionManager). `LabRegistry.sol` es FASE 2 (ADR-010).
+- Nuevo módulo backend: `quality/` para integración con laboratorios certificados — **FASE 2**
+
+**Cambios v2.0 → v2.1 (reconciliación con código real — 2026-05-29):**
+- MVP confirmado en **3 contratos**, no 4. `LabRegistry` / `QualityAttestation` / estado `QUALITY_ATTESTED` son FASE 2 (ADR-010).
+- Redención: máquina de estados 2 fases ADR-017 (`iniciarRedencion` → `confirmarExportacion` → `completarRedencion`); Modelo Option B — lock acumulator contable, sin escrow de tokens; `cancelarRedencion` desde INICIADA o EN_EXPORTACION (ADR-015, 60 días buyer self-cancel).
+- Asimetría de pause ADR-016: `pause()` = Compliance|Admin, `unpause()` = solo Admin; aplica a los 3 contratos incluido IdentityRegistry (FIX H-02 / ADR-013).
+- Los 3 contratos usan `AccessControlDefaultAdminRules` con delay de 3 días (ADR-012 / FIX M-08), no `AccessControl` plano.
+- Escrow total post-cosecha (ADR-009 / FIX H-01); tier-check en reembolso (ADR-014 / FIX H-01).
 
 **Alcance:** este documento define **exclusivamente** la arquitectura tecnológica del MVP. La gestión legal, regulatoria y de relacionamiento institucional queda fuera del alcance y es responsabilidad de la contraparte legal del proyecto.
 
@@ -91,10 +98,10 @@ La plataforma es una **infraestructura de tokenización de activos reales (Real 
 | Estándar de token | **ERC-1155** | Multi-asset eficiente, batch operations, soporte universal |
 | Lenguaje contratos | **Solidity 0.8.24+** | Estándar de industria, pool de auditores máximo |
 | Framework de tests | **Foundry** | Fuzzing nativo, invariant testing, performance |
-| Arquitectura contratos | **4 contratos inmutables sin proxy** | AssetVault + IdentityRegistry + RedemptionManager + **LabRegistry** |
+| Arquitectura contratos | **3 contratos inmutables sin proxy (MVP)** | AssetVault + IdentityRegistry + RedemptionManager. `LabRegistry` es FASE 2 (ADR-010). |
 | Oráculo de hitos productivos | **Safe multi-firma 2-de-3 (humano)** | Decisiones humanas firmadas para cosecha, almacenamiento, exportación |
 | Oráculo de reservas físicas | **Chainlink Proof of Reserve** | Verificación cryptográfica pública de kg en almacén. Aplicación a Chainlink BUILD program |
-| Oráculo de calidad | **LabRegistry + QualityAttestation** | Pilar del moat: palinología + NMR firmados por labs certificados (IBNORCA, Eurofins, Intertek, SGS) on-chain |
+| Oráculo de calidad | **LabRegistry + QualityAttestation (FASE 2 — ADR-010)** | Pilar del moat: palinología + NMR firmados por labs certificados (IBNORCA, Eurofins, Intertek, SGS) on-chain. No forma parte del MVP. |
 | KYC integrado | **Plume Arc** (nativo de Plume) | Reemplaza parte de IdentityRegistry.sol custom; sincronización híbrida con Sumsub |
 | Cross-chain (multi-chain) | **Plume SkyLink + Chainlink CCIP (eval)** | Para mirror de estado Plume↔Polygon |
 | Runtime backend | **Bun** | Performance, TypeScript nativo, DX moderno |
@@ -337,7 +344,7 @@ Cinco candidatas evaluadas: Plume Network, Polygon PoS, Arbitrum One, Algorand, 
 
 **Costo de gas estimado en Plume:**
 - Comparable o menor a Polygon
-- Deploy de 4 contratos: ~USD 1-2
+- Deploy de 3 contratos MVP: ~USD 1-2
 - Mint por compra: ~USD 0.005-0.02
 - Operaciones del oráculo: ~USD 0.05
 
@@ -545,7 +552,7 @@ ERC-3643 fue descartado porque su valor agregado (transferencias P2P entre verif
 
 ### 5.3 Implementación específica
 
-- **OpenZeppelin Contracts v5**: usar `ERC1155` + `ERC1155Supply` + `ERC1155Pausable` + `AccessControl` + `ReentrancyGuard`
+- **OpenZeppelin Contracts v5**: usar `ERC1155` + `ERC1155Supply` + `ERC1155Pausable` + `AccessControlDefaultAdminRules` (delay 3 días, ADR-012) + `ReentrancyGuard`
 - **Convención de granularidad:** 1 token = 0.5 kg para miel (configurable por categoría de asset)
 - **Sin decimals nativos**: balance es entero. La conversión a unidades físicas se hace en la capa de presentación con constantes documentadas.
 
@@ -562,25 +569,24 @@ ERC-3643 fue descartado porque su valor agregado (transferencias P2P entre verif
 | 5 contratos | Como arriba + ReserveVault + ComplianceHook | Máxima separación | Over-engineering para MVP |
 | Diamond Pattern (EIP-2535) | 1 proxy + N facetas | Upgradeability granular | Auditoría compleja, magic |
 
-### 6.2 Recomendación: 4 contratos inmutables
+### 6.2 Recomendación: 3 contratos inmutables (MVP)
 
-**Decisión: cuatro contratos inmutables sin proxy.**
+**Decisión: tres contratos inmutables sin proxy para el MVP (ADR-010).**
 
 ```
 AssetVault.sol         (ERC-1155 + ciclo de vida de lotes + reserva embebida + compliance hook embebido)
 IdentityRegistry.sol   (whitelist on-chain, tiers, sanciones, congelamiento — bridge con Plume Arc)
-RedemptionManager.sol  (escrow + flujo de redención)
-LabRegistry.sol        (whitelist de laboratorios certificados + verificación de QualityAttestation)
+RedemptionManager.sol  (máquina de estados 2 fases + lock acumulator Option B — ADR-017)
 ```
 
-El cuarto contrato (`LabRegistry.sol`) se agrega en esta versión 2.0 para implementar el **oráculo de calidad** que es el pilar diferencial del producto (ver Sección 7B).
+> **FASE 2 — ADR-010:** `LabRegistry.sol` (whitelist de laboratorios certificados + verificación de `QualityAttestation`) está reservado para FASE 2 y **no se deploya con el MVP**. Ver Sección 7B para el diseño de referencia. El estado `QUALITY_ATTESTED` y la función `confirmarCalidad` en `AssetVault` tampoco existen en el MVP; `COSECHADO` transiciona directamente a `ALMACENADO`.
 
 ### 6.3 Por qué inmutable (no upgradeable)
 
 - **Confianza máxima del usuario:** nadie puede cambiar las reglas después del deploy
 - **Auditoría simplificada:** sin proxy patterns, sin storage slots colisionando
 - **Menos superficie de ataque:** sin admin functions de upgrade
-- **Mitigación de bugs:** función `pause()` ejecutable por `COMPLIANCE_OFFICER_ROLE`. Si bug crítico aparece, pausamos y migramos a v2 con re-mint pro-rata. Costoso operacionalmente pero infrecuente.
+- **Mitigación de bugs:** función `pause()` ejecutable por `COMPLIANCE_OFFICER_ROLE` OR `DEFAULT_ADMIN_ROLE` (ADR-016). `unpause()` solo por `DEFAULT_ADMIN_ROLE` (asimetría deliberada). Si bug crítico aparece, pausamos y migramos a v2 con re-mint pro-rata. Costoso operacionalmente pero infrecuente.
 
 ### 6.4 Por qué 3 y no 5 contratos
 
@@ -593,7 +599,7 @@ El cuarto contrato (`LabRegistry.sol`) se agrega en esta versión 2.0 para imple
 
 | Métrica | Valor |
 |---|---|
-| Líneas de código Solidity total (4 contratos) | ~1,400-1,800 LOC |
+| Líneas de código Solidity total (3 contratos MVP) | ~1,000-1,400 LOC |
 | Tiempo de implementación | 3-4 semanas (con tests Foundry) |
 | Coverage objetivo | 100% líneas, branches |
 | Fuzz runs | ≥ 10,000 |
@@ -686,7 +692,7 @@ Multi-firma con 3 firmantes (cofundadores con hardware wallets), threshold 2-de-
 |---|---|---|
 | Confirmación de hitos productivos (cosecha, almacenamiento, exportación, fallo) | **Safe multi-firma 2-de-3** | Decisiones humanas con responsabilidad identificable |
 | **Verificación pública de reservas físicas (kg en almacén)** | **Chainlink Proof of Reserve** | Credibilidad institucional cryptográficamente verificable |
-| Confirmación de calidad (palinología, NMR) | **LabRegistry + QualityAttestation** | Ver Sección 7B (nueva) |
+| Confirmación de calidad (palinología, NMR) | **LabRegistry + QualityAttestation (FASE 2 — ADR-010)** | Ver Sección 7B — no incluido en MVP. |
 | Cross-chain Plume↔Polygon (fase 6+) | **Plume SkyLink** (primario) o **Chainlink CCIP** (alternativa) | Mirror de estado, no bridge de tokens |
 | Price feeds, VRF, Automation, Functions | **No usar en MVP** | Innecesarios para el caso de uso |
 
@@ -729,9 +735,14 @@ Chainlink PoR resuelve esto:
 
 ---
 
-## 7B. Decisión técnica #4B: oráculo de calidad (palinología + NMR + LabRegistry)
+## 7B. [FASE 2 — ADR-010] Decisión técnica #4B: oráculo de calidad (palinología + NMR + LabRegistry)
 
-**Esta sección es nueva en v2.0 y representa el pilar diferencial del producto.**
+> **Esta sección describe una decisión arquitectónica FASE 2, no parte del MVP.**
+> `LabRegistry.sol`, `QualityAttestation`, la función `confirmarCalidad` y el estado `QUALITY_ATTESTED`
+> están reservados para activación posterior (ADR-010). El MVP deployará 3 contratos solamente.
+> Esta sección se mantiene como referencia de diseño para cuando se active.
+
+**Esta sección fue incorporada en v2.0 y representa el pilar diferencial del producto para FASE 2.**
 
 ### 7B.1 El problema técnico-comercial
 
@@ -897,9 +908,9 @@ Esta función:
 - Confirmación de calidad de un lote (recoge muestras → envía a labs → recibe reportes → builds attestation → submit al oracle)
 - Manejo de discrepancias entre labs (si los dos labs reportan resultados muy distintos)
 
-**Adición al timeline operativo del lote:**
-- Antes: PREVENTA → COSECHADO → ALMACENADO → REDENCION → AGOTADO
-- Ahora: PREVENTA → COSECHADO → **QUALITY_ATTESTED** → ALMACENADO → REDENCION → AGOTADO
+**Timeline operativo del lote:**
+- **MVP:** PREVENTA → COSECHADO → ALMACENADO → REDENCION_PARCIAL → AGOTADO (o FALLIDO desde PREVENTA/COSECHADO)
+- **FASE 2 (con LabRegistry):** PREVENTA → COSECHADO → **QUALITY_ATTESTED** → ALMACENADO → REDENCION_PARCIAL → AGOTADO
 
 **Tiempo y costo adicional por lote:**
 - Tiempo entre cosecha y attestation: 2-4 semanas (envío de muestras, análisis, recepción de reportes)
@@ -946,11 +957,12 @@ Esta función:
 ### 8.2 Stack de protocolos confirmado v2.0
 
 **On-chain (Plume primaria, Polygon fase 6+):**
-- ERC-1155 + AccessControl + ReentrancyGuard + Pausable (OpenZeppelin v5)
+- ERC-1155 + `AccessControlDefaultAdminRules` (delay 3 días, ADR-012) + ReentrancyGuard + Pausable (OpenZeppelin v5)
+- Asimetría de pause ADR-016: `pause()` = Compliance|Admin; `unpause()` = solo Admin (aplica a los 3 contratos)
 - Safe multi-firma 2-de-3 (deploy en Plume + Polygon)
 - Plume Arc para KYC integrado a nivel chain
 - Chainlink Proof of Reserve para verificación de reservas físicas
-- LabRegistry custom para attestations de calidad
+- **FASE 2 — ADR-010:** LabRegistry custom para attestations de calidad
 
 **Tooling Solidity:**
 - Foundry (forge, cast, anvil)
@@ -1002,19 +1014,19 @@ Esta función:
 | Stable coin (Plume) | USDC nativo | — | Plume USDC contract address |
 | Stable coin (Polygon) | USDC nativo Circle | — | `0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359` |
 
-### 9.2 Contratos del MVP (v2.0 — 4 contratos)
+### 9.2 Contratos del MVP (v2.1 — 3 contratos, ADR-010)
 
 | Contrato | Propósito | Líneas estimadas |
 |---|---|---|
-| `AssetVault.sol` | ERC-1155 + lifecycle + reserve + compliance hook + quality attestation | ~600-800 |
-| `IdentityRegistry.sol` | Whitelist on-chain, tiers, sanctions, bridge con Plume Arc | ~200-300 |
-| `RedemptionManager.sol` | Escrow + redemption flow | ~200-300 |
-| `LabRegistry.sol` | Whitelist labs certificados + verificación firmas | ~150-250 |
-| `interfaces/I*.sol` | Interfaces | ~150 total |
+| `AssetVault.sol` | ERC-1155 + lifecycle + escrow total + compliance hook. Sin `QualityAttestation` (FASE 2). | ~500-700 |
+| `IdentityRegistry.sol` | Whitelist on-chain, tiers, sanciones, congelamiento. Pausable (ADR-013, FIX H-02). | ~200-300 |
+| `RedemptionManager.sol` | Máquina de estados 2 fases (ADR-017) + lock acumulator Option B. | ~200-300 |
+| `interfaces/I*.sol` | Interfaces (3 contratos MVP) | ~120 total |
 | `libraries/ComplianceConstants.sol` | Constantes (granularidad, reserva, tiers) | ~50 |
 | `libraries/DocumentHashes.sol` | Helpers SHA-256 | ~50 |
-| `libraries/QualityRules.sol` | Reglas de calidad monofloral (45% polen, etc.) | ~50 |
-| **Total estimado** | | **~1,450-2,050 LOC** |
+| **Total estimado MVP** | | **~1,070-1,470 LOC** |
+| *(FASE 2) `phase2/LabRegistry.sol`* | *Whitelist labs certificados + verificación firmas (ADR-010)* | *~150-250* |
+| *(FASE 2) `libraries/QualityRules.sol`* | *Reglas de calidad monofloral (ADR-010)* | *~50* |
 
 ### 9.3 Configuración del proyecto Foundry
 
@@ -1036,9 +1048,10 @@ verbosity = 2
 
 ### 9.4 Estrategia de deployment
 
-- **Testnet (Polygon Amoy):** primer deploy completo + ejecución de 7 escenarios end-to-end de validación
-- **Pre-mainnet:** auditoría externa (Trail of Bits, Sherlock contest, o OpenZeppelin)
-- **Mainnet (Polygon PoS):** deploy verificado en PolygonScan + configuración de roles del Safe
+- **Testnet (Plume Testnet):** primer deploy de los 3 contratos MVP + ejecución de 7 escenarios end-to-end de validación
+- **Pre-mainnet:** auditoría externa (Trail of Bits, Sherlock contest, o OpenZeppelin) — auditoría de 3 contratos
+- **Mainnet (Plume Mainnet, fases 1-5):** deploy verificado en Plume Explorer + configuración de roles del Safe
+- **Mainnet (Polygon PoS, fase 6+):** deploy incremental con auditoría de cambios mínimos
 - **Scripts de deployment:** Foundry scripts en `script/Deploy.s.sol` con parámetros versionados
 
 ---
@@ -1058,19 +1071,24 @@ verbosity = 2
 
 ### 10.2 IdentityRegistry on-chain
 
-```
-struct IdentityData {
-    uint8   tier;          // 0=none, 1, 2, 3
+```solidity
+// CONTRACT-SPECS §5 — struct renombrado KYCData (antes IdentityData)
+struct KYCData {
+    uint8   tier;                  // 0=none/revocado, 1=básico, 2=estándar, 3=reforzado EDD
     bool    sanctioned;
     bool    frozen;
-    bytes2  jurisdiction;  // ISO 3166-1 alpha-2
-    uint64  expiresAt;
-    uint64  updatedAt;
-    bytes32 externalRefHash; // hash del applicant Sumsub
+    bytes2  jurisdiction;          // ISO 3166-1 alpha-2 (e.g. "BO", "DE", "US")
+    uint64  expiresAt;             // unix timestamp de expiración KYC
+    uint64  updatedAt;             // unix timestamp del último cambio
+    bytes32 sumsubApplicantHash;   // hash del applicantId Sumsub (audit trail off-chain, no PII)
 }
 
-mapping(address => IdentityData) public identities;
+// El contrato no almacena PII. sumsubApplicantHash es un commitment criptográfico unidireccional.
+mapping(address => KYCData) private _kyc;
 ```
+
+> **ADR-012 / FIX M-08:** `IdentityRegistry` usa `AccessControlDefaultAdminRules` (delay 3 días para transferencias de `DEFAULT_ADMIN_ROLE`).
+> **ADR-016 / FIX H-02:** `IdentityRegistry` implementa `Pausable`. Asimetría: `pause()` = COMPLIANCE_OFFICER_ROLE OR DEFAULT_ADMIN_ROLE; `unpause()` = solo DEFAULT_ADMIN_ROLE. Las views (`canMint`, `canRedeem`, `isSanctioned`) **no se bloquean** durante el pause, para que AssetVault y RedemptionManager sigan validando.
 
 ### 10.3 Screening de sancionados
 
@@ -1596,20 +1614,21 @@ tokenization-platform/
 ├── packages/
 │   ├── contracts/                 # Smart contracts Solidity (Foundry)
 │   │   ├── src/
-│   │   │   ├── AssetVault.sol
-│   │   │   ├── IdentityRegistry.sol
-│   │   │   ├── RedemptionManager.sol
-│   │   │   ├── LabRegistry.sol           # NUEVO v2.0 — oráculo de calidad
+│   │   │   ├── AssetVault.sol             # MVP
+│   │   │   ├── IdentityRegistry.sol       # MVP
+│   │   │   ├── RedemptionManager.sol      # MVP
+│   │   │   ├── phase2/                    # FASE 2 — no deployado en MVP (ADR-010)
+│   │   │   │   └── LabRegistry.sol        # FASE 2 — oráculo de calidad
 │   │   │   ├── interfaces/
 │   │   │   │   ├── IAssetVault.sol
 │   │   │   │   ├── IIdentityRegistry.sol
 │   │   │   │   ├── IRedemptionManager.sol
-│   │   │   │   └── ILabRegistry.sol      # NUEVO v2.0
+│   │   │   │   └── ILabRegistry.sol       # FASE 2 (ADR-010)
 │   │   │   ├── libraries/
 │   │   │   │   ├── ComplianceConstants.sol
 │   │   │   │   ├── DocumentHashes.sol
-│   │   │   │   └── QualityRules.sol      # NUEVO v2.0
-│   │   │   └── adapters/                  # NUEVO v2.0 — chain adapters
+│   │   │   │   └── QualityRules.sol       # FASE 2 (ADR-010)
+│   │   │   └── adapters/                  # chain adapters
 │   │   │       ├── PlumeArcAdapter.sol    # bridge IdentityRegistry ↔ Plume Arc
 │   │   │       └── ChainlinkPoRAdapter.sol # integración con Chainlink PoR feeds
 │   │   ├── test/
@@ -1617,25 +1636,22 @@ tokenization-platform/
 │   │   │   │   ├── AssetVault.t.sol
 │   │   │   │   ├── IdentityRegistry.t.sol
 │   │   │   │   ├── RedemptionManager.t.sol
-│   │   │   │   └── LabRegistry.t.sol      # NUEVO v2.0
+│   │   │   │   └── phase2/LabRegistry.t.sol   # FASE 2 (ADR-010)
 │   │   │   ├── fuzz/
-│   │   │   │   ├── AssetVault.fuzz.t.sol
-│   │   │   │   └── QualityAttestation.fuzz.t.sol  # NUEVO v2.0
+│   │   │   │   └── AssetVault.fuzz.t.sol
 │   │   │   ├── invariant/
 │   │   │   │   └── AssetVault.invariant.t.sol
 │   │   │   └── integration/
 │   │   │       ├── PurchaseFlow.t.sol
 │   │   │       ├── RedemptionFlow.t.sol
 │   │   │       ├── OracleFlow.t.sol
-│   │   │       ├── QualityAttestationFlow.t.sol  # NUEVO v2.0
-│   │   │       ├── ChainlinkPoRFlow.t.sol         # NUEVO v2.0
-│   │   │       └── ComplianceScenarios.t.sol
+│   │   │       ├── ComplianceScenarios.t.sol
+│   │   │       └── phase2/QualityAttestationFlow.t.sol  # FASE 2 (ADR-010)
 │   │   ├── script/
 │   │   │   ├── Deploy.s.sol               # Multi-chain (Plume + Polygon)
-│   │   │   ├── DeployPlume.s.sol          # NUEVO v2.0
-│   │   │   ├── DeployPolygon.s.sol        # NUEVO v2.0 (fase 6+)
+│   │   │   ├── DeployPlume.s.sol          # Plume testnet + mainnet
+│   │   │   ├── DeployPolygon.s.sol        # fase 6+
 │   │   │   ├── ConfigureRoles.s.sol
-│   │   │   ├── SeedLabs.s.sol             # NUEVO v2.0 — IBNORCA + Eurofins + ...
 │   │   │   └── VerifyContracts.s.sol
 │   │   ├── foundry.toml
 │   │   ├── remappings.txt
@@ -1910,9 +1926,11 @@ Cada módulo tiene un propósito acotado, una API clara y una documentación pro
 - `POST /webhooks/sumsub/business` — webhook KYC business
 - `GET /admin/identity/queue` — cola de revisión manual
 
-### 22.3B `quality/` (oráculo de calidad — NUEVO v2.0)
+### 22.3B `quality/` (oráculo de calidad — FASE 2, ADR-010)
 
-**Propósito:** integración con laboratorios certificados (IBNORCA, Eurofins, Intertek, SGS), construcción y verificación de QualityAttestation, sincronización on-chain con LabRegistry.
+> **Este módulo no se implementa en el MVP.** Requiere `LabRegistry.sol` (FASE 2). Se documenta aquí como referencia de diseño para la activación posterior.
+
+**Propósito (FASE 2):** integración con laboratorios certificados (IBNORCA, Eurofins, Intertek, SGS), construcción y verificación de QualityAttestation, sincronización on-chain con LabRegistry.
 
 **Endpoints clave:**
 - `POST /admin/quality/labs` — agregar lab a whitelist (LabRegistry on-chain)
@@ -2059,24 +2077,35 @@ Cada módulo tiene un propósito acotado, una API clara y una documentación pro
 15. Tx ejecutada → USDC transferido al productor SRL
 ```
 
-### 23.4 Flujo: redención y exportación
+### 23.4 Flujo: redención y exportación (ADR-017 — 2 fases, Option B)
+
+> **Modelo Option B — lock acumulator:** los tokens permanecen en el wallet del comprador todo el tiempo. El lock es contable (`_tokensLockedFor`). El burn ocurre solo al completar la redención vía `burnForRedemption`.
 
 ```
 1. Usuario (tier ≥ 2) navega a /account/lots/:lotId
 2. Click "Redimir" → completa formulario datos de envío
-3. Backend valida: lot.estado == ALMACENADO, kyc.tier >= 2
-4. Backend hashea datos de envío (SHA-256)
-5. Backend ejecuta RedemptionManager.iniciarRedencion() (signed)
-6. Tokens del usuario quedan locked en escrow del contract
-7. Usuario ve "Redención iniciada, esperando exportación"
-8. Operador SRL recibe notificación → coordina con almacén
-9. Operador genera DUE en Aduana (off-chain)
-10. Operador contrata courier → emite BL/AWB
+3. Usuario firma la tx directamente (iniciarRedencion no requiere BACKEND_SIGNER_ROLE)
+4. RedemptionManager.iniciarRedencion(loteId, cantidadTokens, datosEnvioHash) ejecutado
+   - Lock contable registrado en _tokensLockedFor (tokens siguen en wallet del comprador)
+   - Estado: INICIADA
+5. Usuario ve "Redención iniciada, esperando confirmación de exportación"
+6. Operador SRL recibe notificación → coordina con almacén → tramita DUE en aduana
+7. Operador obtiene número DUE
+8. Backend prepara tx Safe: confirmarExportacion(redencionId, dueNumero)
+9. Safe firma (ORACLE_ROLE) → tx ejecutada
+   - Estado: EN_EXPORTACION. Tokens aún en wallet del comprador.
+10. Operador contrata courier → recibe BL/AWB
 11. Operador sube BL/AWB → backend hashea
-12. Backend prepara tx confirmarExportacion(redemptionId, dueNumero, hashBLAWB)
-13. Safe firma → tx ejecutada → tokens quemados definitivamente
+12. Backend prepara tx Safe: completarRedencion(redencionId, hashBLAWB)
+13. Safe firma → tx ejecutada:
+    - Estado: COMPLETADA
+    - burnForRedemption() quema tokens del comprador
 14. Backend notifica al usuario con tracking del envío
 15. Audit log actualizado con tx hashes y URIs Arweave
+
+Cancelación (ADR-015):
+- Oracle o Compliance pueden cancelar desde INICIADA o EN_EXPORTACION (reason obligatorio)
+- El comprador puede auto-cancelar tras REDENCION_TIMEOUT = 60 días si el Oracle no avanza
 ```
 
 ### 23.5 Flujo: lote fallido y reembolso
@@ -2127,33 +2156,31 @@ Cada módulo tiene un propósito acotado, una API clara y una documentación pro
 - [ ] Configurar GitHub Actions CI
 - [ ] Setup Vercel deployment preview
 - [ ] Setup Railway/Fly.io backend
-- [ ] Documentar ADRs base: 001 chain (multi-chain Plume+Polygon), 002 token, 003 contracts (4), 004 oracle, 005 Chainlink PoR, 006 oráculo de calidad, 007 grants strategy
+- [ ] Documentar ADRs base: 001 chain (multi-chain Plume+Polygon), 002 token, 003 contracts (3 MVP + FASE 2 LabRegistry — ADR-010), 004 oracle, 005 Chainlink PoR, 006 oráculo de calidad (FASE 2), 007 grants strategy
 - [ ] Aplicar a Plume Foundation Grants
 - [ ] Aplicar a Chainlink BUILD program
 - [ ] Aplicar a Stellar Community Fund (paralelo, mantiene opcionalidad)
 - [ ] Contactar IBNORCA y Eurofins para acuerdos preliminares de testing
 
-### 24.2 Fase 1 — Smart contracts (semana 3-6, +1 semana por LabRegistry)
+### 24.2 Fase 1 — Smart contracts (semana 3-6)
 
 **Outputs:**
-- **4 contratos** implementados, tested, deployados en **Plume Testnet**
+- **3 contratos MVP** implementados, tested, deployados en **Plume Testnet**
 - ABIs y types generados a `packages/abis`
 - Cobertura 100% en líneas y branches
 - Análisis estático Slither sin issues high
 - Integración inicial con Chainlink PoR feeds (testnet)
-- LabRegistry seedeado con labs candidatos (IBNORCA, Eurofins)
 
 **Tareas técnicas:**
-- [ ] `ComplianceConstants.sol` + `DocumentHashes.sol` + `QualityRules.sol`
-- [ ] `IdentityRegistry.sol` + bridge con Plume Arc + tests unit
-- [ ] `AssetVault.sol` (con QualityAttestation struct) + tests unit
-- [ ] `RedemptionManager.sol` + tests unit
-- [ ] **`LabRegistry.sol` + tests unit (NUEVO v2.0)**
+- [ ] `ComplianceConstants.sol` + `DocumentHashes.sol`
+- [ ] `IdentityRegistry.sol` (AccessControlDefaultAdminRules + Pausable, ADR-012/ADR-016) + bridge con Plume Arc + tests unit
+- [ ] `AssetVault.sol` (sin QualityAttestation — FASE 2) + tests unit
+- [ ] `RedemptionManager.sol` (Option B lock acumulator, 2-phase ADR-017) + tests unit
 - [ ] `ChainlinkPoRAdapter.sol` (integración PoR feeds)
-- [ ] Fuzz tests (incluyendo QualityAttestation.fuzz)
+- [ ] Fuzz tests AssetVault + RedemptionManager
 - [ ] Invariant tests
-- [ ] Integration tests (PurchaseFlow, RedemptionFlow, OracleFlow, **QualityAttestationFlow**, **ChainlinkPoRFlow**, ComplianceScenarios)
-- [ ] Deploy scripts (`DeployPlume.s.sol`, `SeedLabs.s.sol`)
+- [ ] Integration tests (PurchaseFlow, RedemptionFlow, OracleFlow, ComplianceScenarios)
+- [ ] Deploy scripts (`DeployPlume.s.sol`, `ConfigureRoles.s.sol`)
 - [ ] Deploy a Plume Testnet
 - [ ] Verificación en Plume Explorer testnet
 - [ ] Configuración de roles + Safe testnet en Plume
@@ -2179,6 +2206,7 @@ Cada módulo tiene un propósito acotado, una API clara y una documentación pro
 - [ ] Tests unit + integration
 
 ### 24.4 Fase 3 — Backend operacional (semana 9-11)
+<!-- Nota: el módulo quality/ es FASE 2 (ADR-010) y no se implementa en Fase 3 del MVP -->
 
 **Outputs:**
 - Flujo de compra completo end-to-end en testnet
@@ -2233,21 +2261,19 @@ Cada módulo tiene un propósito acotado, una API clara y una documentación pro
 ### 24.7 Fase 6 — Auditoría, hardening y mainnet Plume (semana 17-20)
 
 **Outputs:**
-- Reporte de auditoría externa de los 4 contratos
+- Reporte de auditoría externa de los 3 contratos MVP
 - Findings resueltos
 - Penetration testing del backend completado
 - Contratos deployados en **Plume Mainnet**
 - Bug bounty program publicado
 
 **Tareas técnicas:**
-- [ ] Contratar auditor externo con experiencia EVM + RWA (Trail of Bits, Sherlock contest, OpenZeppelin, Quantstamp, Cyfrin)
-- [ ] Auditoría adicional específica de LabRegistry y QualityAttestation
+- [ ] Contratar auditor externo con experiencia EVM + RWA (Trail of Bits, Sherlock contest, OpenZeppelin, Quantstamp, Cyfrin) — auditoría de 3 contratos MVP
 - [ ] Resolver findings high/medium
 - [ ] Penetration testing externo backend/frontend
-- [ ] Deploy contratos a Plume Mainnet
+- [ ] Deploy 3 contratos a Plume Mainnet
 - [ ] Verificación en Plume Explorer
 - [ ] Configurar Safe Plume mainnet (3 firmantes con hardware wallets Ledger)
-- [ ] Seedear LabRegistry con IBNORCA + Eurofins firmados
 - [ ] Configurar Chainlink PoR feeds en mainnet
 - [ ] Publicar bug bounty en Immunefi
 - [ ] Final review interno
@@ -2258,18 +2284,17 @@ Cada módulo tiene un propósito acotado, una API clara y una documentación pro
 - Frontend en producción
 - Primer lote piloto creado en Plume mainnet
 - 5-10 compradores beta invitados
-- Primera redención real ejecutada end-to-end
-- Primera QualityAttestation con labs reales (IBNORCA + Eurofins)
+- Primera redención real ejecutada end-to-end (2 fases: confirmarExportacion → completarRedencion)
 
 **Tareas técnicas:**
 - [ ] Deploy frontend a producción Vercel
 - [ ] Deploy backend a producción Railway
 - [ ] Crear primer lote piloto (50-100 kg, una variedad, monofloral romero o banda)
-- [ ] Envío de muestras a IBNORCA + Eurofins para QualityAttestation
 - [ ] Onboarding de 5-10 compradores beta (mix B2B + B2C)
 - [ ] Primera compra real → primera redención real → validación end-to-end
 - [ ] Monitoreo intensivo primeras 4 semanas
 - [ ] Iteración basada en feedback
+- [ ] Coordinar primeros acuerdos con IBNORCA + Eurofins (para activación de LabRegistry en FASE 2)
 
 ### 24.9 Fase 8 — Expansión a Polygon (semana 24-27, post soft-launch exitoso)
 
@@ -2295,14 +2320,15 @@ Cada módulo tiene un propósito acotado, una API clara y una documentación pro
 | Fase | Duración | Output principal |
 |---|---|---|
 | 0. Setup + grants | 2 semanas | Monorepo + CI/CD + aplicaciones grants |
-| 1. Contratos (4) | 4 semanas | 4 contratos + Chainlink PoR + tests 100% |
+| 1. Contratos (3 MVP) | 4 semanas | 3 contratos + Chainlink PoR + tests 100% |
 | 2. Backend core | 3 semanas | KYC + docs + audit + Plume Arc bridge |
-| 3. Backend operacional + quality | 4 semanas | Flujos compra + redención + módulo `quality/` |
+| 3. Backend operacional | 3 semanas | Flujos compra + redención (2 fases ADR-017) |
 | 4. Frontend | 3 semanas | UX completa con multi-chain ready |
 | 5. Integración E2E | 2 semanas | 7+ escenarios validados |
-| 6. Auditoría + mainnet Plume | 4 semanas | Findings resueltos, deploy Plume mainnet |
-| 7. Soft launch | 3 semanas | Primer lote + primera QualityAttestation real |
+| 6. Auditoría + mainnet Plume | 4 semanas | Findings resueltos, deploy Plume mainnet (3 contratos) |
+| 7. Soft launch | 3 semanas | Primer lote + primera redención real end-to-end |
 | 8. Expansión Polygon | 4 semanas | Multi-chain operativo |
+| *(FASE 2) LabRegistry* | *+3-4 semanas* | *LabRegistry + QualityAttestation + módulo quality/ (ADR-010)* |
 
 **Total fase 1-7 (Plume): 25 semanas (≈ 6 meses)** hasta primer comprador real.
 **Total fase 1-8 (multi-chain): 29 semanas (≈ 7 meses)** hasta operación completa Plume + Polygon.
@@ -2317,6 +2343,9 @@ Documentación explícita de tecnologías que fueron consideradas pero descartad
 - **Chainlink ya no está descartado completamente.** Proof of Reserve se incorpora desde MVP. Otros productos de Chainlink (Price Feeds, VRF, Automation) siguen descartados.
 - **Plume Network reemplaza a Polygon como chain primaria.** Polygon pasa a ser chain secundaria en fase 8.
 - **Arbitrum, Algorand, Stellar siguen descartados** para MVP, con razones documentadas en sección 4.2 actualizada.
+
+**Cambios respecto a v2.0 (reconciliación v2.1):**
+- **LabRegistry / QualityAttestation: FASE 2 (ADR-010).** El MVP deploya 3 contratos, no 4. EAS sigue descartado; LabRegistry custom es la solución — pero reservada para FASE 2.
 
 | Tecnología | Categoría | Razón de descarte |
 |---|---|---|
@@ -2464,7 +2493,8 @@ Documentación explícita de tecnologías que fueron consideradas pero descartad
 
 **Fin del documento.**
 
-**Versión 1.0 — 16 de mayo de 2026**
+**Versión 2.0 — 19 de mayo de 2026** (multi-chain Plume + Polygon, oráculo de calidad)
+**Versión 2.1 — 29 de mayo de 2026** (reconciliación con código real: 3 contratos MVP, ADR-010/012/013/015/016/017)
 **Autor: Dany Hidalgo F.**
 
 Este documento es un artefacto técnico de diseño. Está sujeto a actualizaciones según evolucione el estado del arte y las decisiones del equipo. Cualquier desviación significativa respecto a lo aquí descrito debe documentarse como un nuevo ADR (Architecture Decision Record) en `docs/architecture/`.
