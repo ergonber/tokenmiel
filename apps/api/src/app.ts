@@ -68,6 +68,66 @@ app.get('/health', (c) => {
 // GET /contracts/AssetVault|IdentityRegistry|RedemptionManager/status
 // ---------------------------------------------------------------------------
 
+app.get('/status/summary', async (c) => {
+  const contractStatuses = await Promise.all(
+    Array.from(CONTRACT_READERS.keys()).map(async (name) => {
+      const reader = CONTRACT_READERS.get(name);
+      if (!reader) {
+        return null;
+      }
+
+      try {
+        const client = reader(env.CHAIN_ID, apiPublicClient(env.CHAIN_ID));
+        const cacheKey = `${env.CHAIN_ID}:${name}`;
+        const now = Date.now();
+        const cached = statusCache.get(cacheKey);
+        let paused: boolean;
+        if (cached && now < cached.expiresAt) {
+          paused = cached.paused;
+        } else {
+          paused = await client.paused();
+          statusCache.set(cacheKey, { paused, expiresAt: now + STATUS_TTL_MS });
+        }
+
+        return {
+          name,
+          address: client.address,
+          chainId: env.CHAIN_ID,
+          paused,
+          status: 'ok' as const,
+        };
+      } catch (err) {
+        logger.warn({ err }, `failed to read ${name} status`);
+        return {
+          name,
+          address: '',
+          chainId: env.CHAIN_ID,
+          paused: true,
+          status: 'error' as const,
+          message: err instanceof Error ? err.message : 'Unknown contract error',
+        };
+      }
+    }),
+  );
+
+  const contracts = Object.fromEntries(
+    contractStatuses.filter((entry): entry is NonNullable<typeof entry> => entry !== null).map((entry) => [entry.name, entry]),
+  );
+
+  return c.json({
+    status: 'ok',
+    chainId: env.CHAIN_ID,
+    service: 'tokenization-api',
+    version: '0.1.0',
+    contracts,
+    summary: {
+      totalContracts: Object.keys(contracts).length,
+      healthyContracts: Object.values(contracts).filter((entry) => entry.status === 'ok').length,
+      pausedContracts: Object.values(contracts).filter((entry) => entry.paused).length,
+    },
+  });
+});
+
 app.get('/contracts/:name/status', async (c) => {
   const name = c.req.param('name');
   const reader = CONTRACT_READERS.get(name);

@@ -12,7 +12,27 @@ describe('GET /contracts/:name/status', () => {
     expect(res.status).toBe(404);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe('UNKNOWN_CONTRACT');
-  });
+  }, 30_000);
+});
+
+describe('GET /status/summary', () => {
+  it('returns health and contract status summary', async () => {
+    const { app } = await import('./app');
+    const res = await app.fetch(new Request('http://local/status/summary'));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string;
+      chainId: number;
+      service: string;
+      version: string;
+      contracts: Record<string, { name: string; address: string; paused: boolean; chainId: number }>;
+    };
+    expect(body.status).toBe('ok');
+    expect(body.service).toBe('tokenization-api');
+    expect(body.contracts.AssetVault).toBeDefined();
+    expect(body.contracts.IdentityRegistry).toBeDefined();
+    expect(body.contracts.RedemptionManager).toBeDefined();
+  }, 30_000);
 });
 
 // Live read against Plume testnet 98867. Opt-in: `LIVE_PLUME=1 ... test`. CI skips it.
