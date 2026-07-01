@@ -1,7 +1,10 @@
 /**
- * Bun.serve entry point.
+ * Server entry point.
  *
- * Starts the HTTP server using Bun's native serve API.
+ * Supports both Bun and Node.js runtimes for deployment flexibility.
+ * - In Bun: uses Bun.serve for optimal performance
+ * - In Node.js/Vercel: exports the Hono app as a serverless function
+ *
  * The Hono app instance lives in app.ts so it can be imported in tests
  * without side effects (no port binding).
  */
@@ -32,16 +35,36 @@ logger.info(
   'chain bootstrap OK — runtime bytecode verified against pins',
 );
 
-const server = Bun.serve({
-  port: env.PORT,
-  fetch: app.fetch,
-});
+// Detect runtime: Bun vs Node.js
+const isBun = typeof (globalThis as any).Bun !== 'undefined';
 
-logger.info(
-  {
-    port: server.port,
-    chainId: env.CHAIN_ID,
-    env: env.NODE_ENV,
-  },
-  `tokenization-api started on port ${server.port}`,
-);
+if (isBun) {
+  // Bun runtime: use native Bun.serve
+  const server = (globalThis as any).Bun.serve({
+    port: env.PORT,
+    fetch: app.fetch,
+  });
+
+  logger.info(
+    {
+      port: server.port,
+      chainId: env.CHAIN_ID,
+      env: env.NODE_ENV,
+      runtime: 'bun',
+    },
+    `tokenization-api started on port ${server.port}`,
+  );
+} else {
+  // Node.js/Vercel runtime: export the app for serverless
+  logger.info(
+    {
+      chainId: env.CHAIN_ID,
+      env: env.NODE_ENV,
+      runtime: 'nodejs',
+    },
+    'tokenization-api ready for serverless (Vercel Functions)',
+  );
+}
+
+// Export for Vercel Functions / Node.js serverless
+export default app;

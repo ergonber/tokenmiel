@@ -79,3 +79,19 @@ drizzle/
 # Bun
 .bun/
 bun.lockb
+.vercel
+
+# Environment variables (NEVER COMMIT THESE)
+# Note: .env.example is committed as documentation
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+.env.testnet
+.env.testnet.*
+.env.deploy
+.env.deploy.*
+
+# Allow .env.example to be committed
+!.env.example
