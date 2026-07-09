@@ -18,7 +18,7 @@
     "@biomejs/biome": "^1.9.0",
     "vitest": "^2.0.0"
   },
-  "packageManager": "pnpm@10.0.0",
+  "packageManager": "pnpm@9.0.0",
   "pnpm": {
     "executionEnv": {
       "nodeVersion": "20"
