@@ -11,15 +11,33 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.4.0",
+    "@rainbow-me/rainbowkit": "^2.2.11",
+    "@tailwindcss/postcss": "^4.3.2",
+    "@tanstack/react-query": "^5.101.2",
+    "autoprefixer": "^10.5.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.23.0",
     "next": "15.3.3",
+    "next-intl": "^4.13.1",
+    "postcss": "^8.5.16",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "react-hook-form": "^7.81.0",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.2",
+    "viem": "2.x",
+    "wagmi": "^3.7.1",
+    "zod": "^3.23.0",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@swc/helpers": "^0.5.23",
     "@types/node": "22.10.1",
     "@types/react": "19.1.0",
     "@types/react-dom": "19.1.0",
-    "typescript": "5.7.3",
+    "typescript": "5.9.3",
     "vitest": "2.1.4"
   }
 }
