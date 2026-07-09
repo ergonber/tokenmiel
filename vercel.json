@@ -1,5 +1,5 @@
 {
-  "installCommand": "corepack enable && corepack use pnpm@9.0.0 && pnpm install --frozen-lockfile",
-  "buildCommand": "cd apps/web && npx next build",
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm --dir apps/web build",
   "outputDirectory": "apps/web/.next"
 }
